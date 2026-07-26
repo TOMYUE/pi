@@ -12,7 +12,7 @@ import {
 	setCapabilities,
 	setCellDimensions,
 } from "../src/terminal-image.ts";
-import { type Component, CURSOR_MARKER, TUI } from "../src/tui.ts";
+import { type Component, Container, CURSOR_MARKER, TUI } from "../src/tui.ts";
 import { VirtualTerminal } from "./virtual-terminal.ts";
 
 class TestComponent implements Component {
@@ -21,6 +21,15 @@ class TestComponent implements Component {
 		return this.lines;
 	}
 	invalidate(): void {}
+}
+
+class CountingContainer extends Container {
+	renderCount = 0;
+
+	override render(width: number): string[] {
+		this.renderCount++;
+		return super.render(width);
+	}
 }
 
 class LoggingVirtualTerminal extends VirtualTerminal {
@@ -809,6 +818,111 @@ describe("TUI differential rendering", () => {
 });
 
 describe("TUI fixed-bottom fullscreen rendering", () => {
+	it("reuses the transcript for scoped composer renders", async () => {
+		const terminal = new VirtualTerminal(40, 8);
+		const tui = new TUI(terminal);
+		const transcript = new CountingContainer();
+		const history = new TestComponent();
+		const composer = new TestComponent();
+		history.lines = Array.from({ length: 20_000 }, (_, i) => `Line ${i}`);
+		composer.lines = ["Composer"];
+		transcript.addChild(history);
+		tui.addChild(transcript);
+		tui.addChild(composer);
+		tui.setFixedBottom(composer);
+		tui.start();
+		await terminal.waitForRender();
+		assert.strictEqual(transcript.renderCount, 1);
+
+		for (let i = 0; i < 100; i++) {
+			composer.lines = [`Composer ${i}`];
+			tui.requestRenderFor(composer);
+			await terminal.waitForRender();
+		}
+
+		assert.strictEqual(transcript.renderCount, 1);
+		assert.strictEqual(terminal.getViewport()[7], "Composer 99");
+
+		terminal.sendInput("\x1b[5~");
+		await terminal.waitForRender();
+		assert.strictEqual(transcript.renderCount, 1);
+		assert.strictEqual(terminal.getViewport()[0], "Line 19987");
+		tui.stop();
+	});
+
+	it("invalidates the transcript cache for transcript changes, width changes, and full invalidation", async () => {
+		const terminal = new VirtualTerminal(30, 6);
+		const tui = new TUI(terminal);
+		const transcript = new CountingContainer();
+		const history = new TestComponent();
+		const composer = new TestComponent();
+		history.lines = ["Line 0", "Line 1"];
+		composer.lines = ["Composer"];
+		transcript.addChild(history);
+		tui.addChild(transcript);
+		tui.addChild(composer);
+		tui.setFixedBottom(composer);
+		tui.start();
+		await terminal.waitForRender();
+
+		history.lines[1] = "Line 1 changed";
+		tui.requestRenderFor(history);
+		await terminal.waitForRender();
+		assert.strictEqual(transcript.renderCount, 2);
+		assert.strictEqual(terminal.getViewport()[1], "Line 1 changed");
+
+		const added = new TestComponent();
+		added.lines = ["Added"];
+		transcript.addChild(added);
+		tui.requestRenderFor(transcript);
+		await terminal.waitForRender();
+		assert.strictEqual(transcript.renderCount, 3);
+		assert.ok(terminal.getViewport().includes("Added"));
+
+		transcript.removeChild(added);
+		tui.requestRenderFor(transcript);
+		await terminal.waitForRender();
+		assert.strictEqual(transcript.renderCount, 4);
+		assert.ok(!terminal.getViewport().includes("Added"));
+
+		terminal.resize(35, 6);
+		await terminal.waitForRender();
+		assert.strictEqual(transcript.renderCount, 5);
+
+		tui.invalidate();
+		tui.requestRenderFor(composer);
+		await terminal.waitForRender();
+		assert.strictEqual(transcript.renderCount, 6);
+		tui.stop();
+	});
+
+	it("lets a dirty transcript request win when it coalesces with a scoped request", async () => {
+		const terminal = new VirtualTerminal(30, 5);
+		const tui = new TUI(terminal);
+		const transcript = new CountingContainer();
+		const history = new TestComponent();
+		const composer = new TestComponent();
+		history.lines = ["Before"];
+		composer.lines = ["Composer"];
+		transcript.addChild(history);
+		tui.addChild(transcript);
+		tui.addChild(composer);
+		tui.setFixedBottom(composer);
+		tui.start();
+		await terminal.waitForRender();
+
+		composer.lines = ["Composer changed"];
+		tui.requestRenderFor(composer);
+		history.lines = ["After"];
+		tui.requestRender();
+		await terminal.waitForRender();
+
+		assert.strictEqual(transcript.renderCount, 2);
+		assert.strictEqual(terminal.getViewport()[0], "After");
+		assert.strictEqual(terminal.getViewport()[4], "Composer changed");
+		tui.stop();
+	});
+
 	it("keeps the composer anchored while transcript output streams", async () => {
 		const terminal = new VirtualTerminal(30, 8);
 		const tui = new TUI(terminal);

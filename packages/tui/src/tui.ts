@@ -250,6 +250,12 @@ type BlockedOverlayFocusRestoreState = {
 type ActiveOverlayFocusRestoreState = EligibleOverlayFocusRestoreState | BlockedOverlayFocusRestoreState;
 type OverlayFocusRestoreState = { status: "inactive" } | ActiveOverlayFocusRestoreState;
 type OverlayFocusRestorePolicy = "clear" | "preserve";
+type ViewportImageBlock = { start: number; end: number };
+type TranscriptRenderCache = {
+	width: number;
+	lines: string[];
+	imageBlocks: ViewportImageBlock[];
+};
 
 /**
  * Container - a component that contains other components
@@ -306,6 +312,8 @@ export class TUI extends Container {
 	private transcriptContentHeight = 0;
 	private transcriptViewportHeight = 0;
 	private followTranscriptOutput = true;
+	private transcriptRenderCache: TranscriptRenderCache | undefined;
+	private transcriptDirty = true;
 	private fullscreenActive = false;
 
 	/** Global callback for debug key (Shift+Ctrl+D). Called before input is forwarded to focused component. */
@@ -344,6 +352,21 @@ export class TUI extends Container {
 
 	get fullRedraws(): number {
 		return this.fullRedrawCount;
+	}
+
+	override addChild(component: Component): void {
+		super.addChild(component);
+		this.markTranscriptDirty();
+	}
+
+	override removeChild(component: Component): void {
+		super.removeChild(component);
+		this.markTranscriptDirty();
+	}
+
+	override clear(): void {
+		super.clear();
+		this.markTranscriptDirty();
 	}
 
 	getShowHardwareCursor(): boolean {
@@ -387,6 +410,7 @@ export class TUI extends Container {
 		this.fixedBottomComponent = component;
 		this.transcriptScrollTop = 0;
 		this.followTranscriptOutput = true;
+		this.markTranscriptDirty();
 	}
 
 	setFocus(component: Component | null): void {
@@ -530,7 +554,7 @@ export class TUI extends Container {
 			this.setFocus(component);
 		}
 		this.terminal.hideCursor();
-		this.requestRender();
+		this.requestRenderFor(this.fixedBottomComponent ?? component);
 
 		// Return handle for controlling this overlay
 		return {
@@ -546,7 +570,7 @@ export class TUI extends Container {
 						this.setFocus(topVisible?.component ?? entry.preFocus);
 					}
 					if (this.overlayStack.length === 0) this.terminal.hideCursor();
-					this.requestRender();
+					this.requestRenderFor(this.fixedBottomComponent ?? component);
 				}
 			},
 			setHidden: (hidden: boolean) => {
@@ -567,14 +591,14 @@ export class TUI extends Container {
 						this.setFocus(component);
 					}
 				}
-				this.requestRender();
+				this.requestRenderFor(this.fixedBottomComponent ?? component);
 			},
 			isHidden: () => entry.hidden,
 			focus: () => {
 				if (!this.overlayStack.includes(entry) || !this.isOverlayVisible(entry)) return;
 				entry.focusOrder = ++this.focusOrderCounter;
 				this.setFocus(component);
-				this.requestRender();
+				this.requestRenderFor(this.fixedBottomComponent ?? component);
 			},
 			unfocus: (unfocusOptions) => {
 				const isFocused = this.focusedComponent === component;
@@ -596,7 +620,7 @@ export class TUI extends Container {
 					} else {
 						this.clearOverlayFocusRestore();
 					}
-					this.requestRender();
+					this.requestRenderFor(this.fixedBottomComponent ?? component);
 					return;
 				}
 				this.clearOverlayFocusRestoreFor(entry);
@@ -605,7 +629,7 @@ export class TUI extends Container {
 					const fallbackTarget = topVisible && topVisible !== entry ? topVisible.component : entry.preFocus;
 					this.setFocus(unfocusOptions ? unfocusOptions.target : fallbackTarget);
 				}
-				this.requestRender();
+				this.requestRenderFor(this.fixedBottomComponent ?? component);
 			},
 			isFocused: () => this.focusedComponent === component,
 		};
@@ -624,7 +648,7 @@ export class TUI extends Container {
 			this.setFocus(topVisible?.component ?? overlay.preFocus);
 		}
 		if (this.overlayStack.length === 0) this.terminal.hideCursor();
-		this.requestRender();
+		this.requestRenderFor(this.fixedBottomComponent ?? overlay.component);
 	}
 
 	/** Check if there are any visible overlays */
@@ -654,6 +678,7 @@ export class TUI extends Container {
 	}
 
 	override invalidate(): void {
+		this.markTranscriptDirty();
 		super.invalidate();
 		for (const overlay of this.overlayStack) overlay.component.invalidate?.();
 	}
@@ -662,6 +687,7 @@ export class TUI extends Container {
 		if (!this.stopped) return;
 		this.stopped = false;
 		this.renderRequested = false;
+		this.markTranscriptDirty();
 		if (this.fixedBottomComponent) {
 			this.previousLines = [];
 			this.previousKittyImageIds.clear();
@@ -676,7 +702,7 @@ export class TUI extends Container {
 		}
 		this.terminal.start(
 			(data) => this.handleInput(data),
-			() => this.requestRender(),
+			() => (this.fixedBottomComponent ? this.requestRenderFor(this.fixedBottomComponent) : this.requestRender()),
 		);
 		this.terminal.hideCursor();
 		if (this.terminalColorSchemeNotificationsEnabled) {
@@ -760,6 +786,29 @@ export class TUI extends Container {
 	}
 
 	requestRender(force = false): void {
+		this.transcriptDirty = true;
+		this.queueRender(force);
+	}
+
+	/**
+	 * Request a render originating from a component. Updates confined to the
+	 * fixed-bottom composer or an overlay can reuse the cached transcript.
+	 */
+	requestRenderFor(component: Component, force = false): void {
+		if (force) {
+			this.requestRender(true);
+			return;
+		}
+		const fixedBottomUpdate =
+			this.fixedBottomComponent !== undefined && this.containsComponent(this.fixedBottomComponent, component);
+		const overlayUpdate = this.overlayStack.some((entry) => this.containsComponent(entry.component, component));
+		if (!fixedBottomUpdate && !overlayUpdate) {
+			this.transcriptDirty = true;
+		}
+		this.queueRender(false);
+	}
+
+	private queueRender(force: boolean): void {
 		if (force) {
 			this.previousLines = [];
 			this.previousWidth = -1; // -1 triggers widthChanged, forcing a full clear
@@ -886,7 +935,7 @@ export class TUI extends Container {
 				return;
 			}
 			this.focusedComponent.handleInput(data);
-			this.requestRender();
+			this.requestRenderFor(this.focusedComponent);
 		}
 	}
 
@@ -917,7 +966,7 @@ export class TUI extends Container {
 		if (nextScrollTop !== this.transcriptScrollTop) {
 			this.transcriptScrollTop = nextScrollTop;
 			this.followTranscriptOutput = nextScrollTop === maxScrollTop;
-			this.requestRender();
+			this.requestRenderFor(this.fixedBottomComponent);
 		}
 		return true;
 	}
@@ -944,7 +993,7 @@ export class TUI extends Container {
 		nextScrollTop = Math.max(0, Math.min(maxScrollTop, nextScrollTop));
 		this.transcriptScrollTop = nextScrollTop;
 		this.followTranscriptOutput = nextScrollTop === maxScrollTop;
-		this.requestRender();
+		this.requestRenderFor(this.fixedBottomComponent);
 		return true;
 	}
 
@@ -1365,25 +1414,42 @@ export class TUI extends Container {
 		return null;
 	}
 
-	private sliceViewportLines(lines: string[], start: number, length: number): string[] {
+	private markTranscriptDirty(): void {
+		this.transcriptDirty = true;
+		this.transcriptRenderCache = undefined;
+	}
+
+	private findKittyImageBlocks(lines: string[]): ViewportImageBlock[] {
+		const blocks: ViewportImageBlock[] = [];
+		for (let i = 0; i < lines.length; i++) {
+			if (extractKittyImageIds(lines[i] ?? "").length === 0) continue;
+			const reservedRows = this.getKittyImageReservedRows(lines, i);
+			blocks.push({ start: i, end: i + reservedRows });
+			i += reservedRows - 1;
+		}
+		return blocks;
+	}
+
+	private sliceViewportLines(
+		lines: string[],
+		start: number,
+		length: number,
+		imageBlocks = this.findKittyImageBlocks(lines),
+	): string[] {
 		const end = Math.min(lines.length, start + length);
 		const visibleLines = lines.slice(start, end);
 
 		// Kitty placements draw their declared row count directly in the terminal.
 		// Hide blocks that cross a viewport boundary so they cannot paint over the
 		// fixed composer or leave orphaned reserved rows at the top.
-		for (let i = 0; i < lines.length; i++) {
-			if (extractKittyImageIds(lines[i] ?? "").length === 0) continue;
-			const reservedRows = this.getKittyImageReservedRows(lines, i);
-			const blockEnd = i + reservedRows;
-			if (i < start || blockEnd > end) {
-				const overlapStart = Math.max(i, start);
-				const overlapEnd = Math.min(blockEnd, end);
+		for (const block of imageBlocks) {
+			if (block.start < start || block.end > end) {
+				const overlapStart = Math.max(block.start, start);
+				const overlapEnd = Math.min(block.end, end);
 				for (let row = overlapStart; row < overlapEnd; row++) {
 					visibleLines[row - start] = "";
 				}
 			}
-			i += reservedRows - 1;
 		}
 
 		return visibleLines;
@@ -1395,11 +1461,18 @@ export class TUI extends Container {
 			throw new Error("Fixed bottom component must remain a direct TUI child");
 		}
 
-		const transcriptLines: string[] = [];
-		for (const child of this.children) {
-			if (child === fixedBottom) continue;
-			transcriptLines.push(...child.render(width));
+		let transcript = this.transcriptRenderCache;
+		if (this.transcriptDirty || transcript?.width !== width) {
+			const lines: string[] = [];
+			for (const child of this.children) {
+				if (child === fixedBottom) continue;
+				lines.push(...child.render(width));
+			}
+			transcript = { width, lines, imageBlocks: this.findKittyImageBlocks(lines) };
+			this.transcriptRenderCache = transcript;
+			this.transcriptDirty = false;
 		}
+		const transcriptLines = transcript.lines;
 
 		const fixedLines = fixedBottom.render(width);
 		const visibleFixedHeight = Math.min(fixedLines.length, height);
@@ -1426,6 +1499,7 @@ export class TUI extends Container {
 			transcriptLines,
 			this.transcriptScrollTop,
 			transcriptHeight,
+			transcript.imageBlocks,
 		);
 		const frame = [
 			...visibleTranscriptLines,
