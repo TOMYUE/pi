@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added fullscreen rendering with a fixed bottom component and an independently scrollable main viewport.
+
 ## [0.82.1] - 2026-07-25
 
 ## [0.82.0] - 2026-07-24

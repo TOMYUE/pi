@@ -300,6 +300,12 @@ export class TUI extends Container {
 	private previousHeight = 0;
 	private focusedComponent: Component | null = null;
 	private inputListeners = new Set<InputListener>();
+	private fixedBottomComponent: Component | undefined;
+	private transcriptScrollTop = 0;
+	private transcriptContentHeight = 0;
+	private transcriptViewportHeight = 0;
+	private followTranscriptOutput = true;
+	private fullscreenActive = false;
 
 	/** Global callback for debug key (Shift+Ctrl+D). Called before input is forwarded to focused component. */
 	public onDebug?: () => void;
@@ -314,7 +320,7 @@ export class TUI extends Container {
 	private maxLinesRendered = 0; // Track terminal's working area (max lines ever rendered)
 	private previousViewportTop = 0; // Track previous viewport top for resize-aware cursor moves
 	private fullRedrawCount = 0;
-	private stopped = false;
+	private stopped = true;
 	private pendingOsc11BackgroundReplies = 0;
 	private pendingOsc11BackgroundQueries: PendingOsc11BackgroundQuery[] = [];
 	private terminalColorSchemeListeners = new Set<(scheme: TerminalColorScheme) => void>();
@@ -363,6 +369,23 @@ export class TUI extends Container {
 	 */
 	setClearOnShrink(enabled: boolean): void {
 		this.clearOnShrink = enabled;
+	}
+
+	/**
+	 * Pin a direct child to the bottom of a fullscreen viewport. All other root
+	 * children become an independently scrollable transcript above it.
+	 * Must be configured before start().
+	 */
+	setFixedBottom(component: Component): void {
+		if (!this.stopped) {
+			throw new Error("setFixedBottom() must be called before TUI.start()");
+		}
+		if (!this.children.includes(component)) {
+			throw new Error("Fixed bottom component must be a direct TUI child");
+		}
+		this.fixedBottomComponent = component;
+		this.transcriptScrollTop = 0;
+		this.followTranscriptOutput = true;
 	}
 
 	setFocus(component: Component | null): void {
@@ -635,11 +658,25 @@ export class TUI extends Container {
 	}
 
 	start(): void {
+		if (!this.stopped) return;
 		this.stopped = false;
+		this.renderRequested = false;
 		this.terminal.start(
 			(data) => this.handleInput(data),
 			() => this.requestRender(),
 		);
+		if (this.fixedBottomComponent) {
+			this.previousLines = [];
+			this.previousKittyImageIds.clear();
+			this.previousWidth = 0;
+			this.previousHeight = 0;
+			this.cursorRow = 0;
+			this.hardwareCursorRow = 0;
+			this.maxLinesRendered = 0;
+			this.previousViewportTop = 0;
+			this.terminal.write("\x1b[?1049h\x1b[H\x1b[?1000h\x1b[?1006h");
+			this.fullscreenActive = true;
+		}
 		this.terminal.hideCursor();
 		if (this.terminalColorSchemeNotificationsEnabled) {
 			this.terminal.write("\x1b[?2031h");
@@ -687,16 +724,21 @@ export class TUI extends Container {
 	}
 
 	stop(): void {
+		if (this.stopped) return;
 		this.stopped = true;
 		if (this.renderTimer) {
 			clearTimeout(this.renderTimer);
 			this.renderTimer = undefined;
 		}
+		this.renderRequested = false;
 		if (this.terminalColorSchemeNotificationsEnabled) {
 			this.terminal.write("\x1b[?2031l");
 		}
-		// Move cursor to the end of the content to prevent overwriting/artifacts on exit
-		if (this.previousLines.length > 0) {
+		if (this.fullscreenActive) {
+			this.terminal.write(`${this.deleteKittyImages(this.previousKittyImageIds)}\x1b[?1000l\x1b[?1006l\x1b[?1049l`);
+			this.fullscreenActive = false;
+		} else if (this.previousLines.length > 0) {
+			// Move cursor to the end of inline content to prevent overwriting/artifacts on exit.
 			// Overwrite the inverted cursor with a normal space to clear the artifact
 			this.terminal.write(" ");
 			const targetRow = this.previousLines.length; // Line after the last content
@@ -769,6 +811,9 @@ export class TUI extends Container {
 		if (this.consumeTerminalColorSchemeReport(data)) {
 			return;
 		}
+		if (this.consumeFullscreenMouseEvent(data)) {
+			return;
+		}
 
 		if (this.inputListeners.size > 0) {
 			let current = data;
@@ -836,6 +881,38 @@ export class TUI extends Container {
 			this.focusedComponent.handleInput(data);
 			this.requestRender();
 		}
+	}
+
+	private consumeFullscreenMouseEvent(data: string): boolean {
+		if (!this.fixedBottomComponent) return false;
+
+		let button: number | undefined;
+		const sgrMatch = data.match(/^\x1b\[<(\d+);\d+;\d+[Mm]$/);
+		if (sgrMatch) {
+			button = Number.parseInt(sgrMatch[1], 10);
+		} else if (data.startsWith("\x1b[M") && data.length === 6) {
+			button = data.charCodeAt(3) - 32;
+		} else {
+			return false;
+		}
+
+		// Consume every mouse event so its escape bytes never reach the editor.
+		// Wheel events do not scroll the transcript behind a modal overlay.
+		if ((button & 64) === 0 || this.hasOverlay()) return true;
+		const wheelDirection = button & 3;
+		if (wheelDirection > 1) return true;
+
+		const maxScrollTop = Math.max(0, this.transcriptContentHeight - this.transcriptViewportHeight);
+		const nextScrollTop = Math.max(
+			0,
+			Math.min(maxScrollTop, this.transcriptScrollTop + (wheelDirection === 0 ? -3 : 3)),
+		);
+		if (nextScrollTop !== this.transcriptScrollTop) {
+			this.transcriptScrollTop = nextScrollTop;
+			this.followTranscriptOutput = nextScrollTop === maxScrollTop;
+			this.requestRender();
+		}
+		return true;
 	}
 
 	private consumeOsc11BackgroundResponse(data: string): boolean {
@@ -1255,12 +1332,89 @@ export class TUI extends Container {
 		return null;
 	}
 
+	private sliceViewportLines(lines: string[], start: number, length: number): string[] {
+		const end = Math.min(lines.length, start + length);
+		const visibleLines = lines.slice(start, end);
+
+		// Kitty placements draw their declared row count directly in the terminal.
+		// Hide blocks that cross a viewport boundary so they cannot paint over the
+		// fixed composer or leave orphaned reserved rows at the top.
+		for (let i = 0; i < lines.length; i++) {
+			if (extractKittyImageIds(lines[i] ?? "").length === 0) continue;
+			const reservedRows = this.getKittyImageReservedRows(lines, i);
+			const blockEnd = i + reservedRows;
+			if (i < start || blockEnd > end) {
+				const overlapStart = Math.max(i, start);
+				const overlapEnd = Math.min(blockEnd, end);
+				for (let row = overlapStart; row < overlapEnd; row++) {
+					visibleLines[row - start] = "";
+				}
+			}
+			i += reservedRows - 1;
+		}
+
+		return visibleLines;
+	}
+
+	private renderFullscreenFrame(width: number, height: number): string[] {
+		const fixedBottom = this.fixedBottomComponent;
+		if (!fixedBottom || !this.children.includes(fixedBottom)) {
+			throw new Error("Fixed bottom component must remain a direct TUI child");
+		}
+
+		const transcriptLines: string[] = [];
+		for (const child of this.children) {
+			if (child === fixedBottom) continue;
+			transcriptLines.push(...child.render(width));
+		}
+
+		const fixedLines = fixedBottom.render(width);
+		const visibleFixedHeight = Math.min(fixedLines.length, height);
+		let fixedStart = Math.max(0, fixedLines.length - visibleFixedHeight);
+		const cursorLine = fixedLines.findIndex((line) => line.includes(CURSOR_MARKER));
+		if (cursorLine !== -1 && (cursorLine < fixedStart || cursorLine >= fixedStart + visibleFixedHeight)) {
+			fixedStart = Math.max(0, Math.min(cursorLine, fixedLines.length - visibleFixedHeight));
+		}
+		const visibleFixedLines = this.sliceViewportLines(fixedLines, fixedStart, visibleFixedHeight);
+
+		const transcriptHeight = Math.max(0, height - visibleFixedLines.length);
+		const maxScrollTop = Math.max(0, transcriptLines.length - transcriptHeight);
+		if (this.transcriptScrollTop > maxScrollTop) {
+			this.transcriptScrollTop = maxScrollTop;
+			this.followTranscriptOutput = true;
+		}
+		if (this.followTranscriptOutput) {
+			this.transcriptScrollTop = maxScrollTop;
+		}
+		this.transcriptContentHeight = transcriptLines.length;
+		this.transcriptViewportHeight = transcriptHeight;
+
+		const visibleTranscriptLines = this.sliceViewportLines(
+			transcriptLines,
+			this.transcriptScrollTop,
+			transcriptHeight,
+		);
+		const frame = [
+			...visibleTranscriptLines,
+			...Array.from({ length: transcriptHeight - visibleTranscriptLines.length }, () => ""),
+			...visibleFixedLines,
+		];
+		if (frame.length !== height) {
+			throw new Error(`Fullscreen frame height mismatch (${frame.length} !== ${height})`);
+		}
+		return frame;
+	}
+
 	private doRender(): void {
 		if (this.stopped) return;
 		const width = this.terminal.columns;
 		const height = this.terminal.rows;
+		const fullscreen = this.fixedBottomComponent !== undefined;
 		const widthChanged = this.previousWidth !== 0 && this.previousWidth !== width;
 		const heightChanged = this.previousHeight !== 0 && this.previousHeight !== height;
+		if (fullscreen && widthChanged) {
+			this.followTranscriptOutput = true;
+		}
 		const previousBufferLength = this.previousHeight > 0 ? this.previousViewportTop + this.previousHeight : height;
 		let prevViewportTop = heightChanged ? Math.max(0, previousBufferLength - height) : this.previousViewportTop;
 		let viewportTop = prevViewportTop;
@@ -1271,8 +1425,8 @@ export class TUI extends Container {
 			return targetScreenRow - currentScreenRow;
 		};
 
-		// Render all components to get new lines
-		let newLines = this.render(width);
+		// Render all components to get new lines.
+		let newLines = fullscreen ? this.renderFullscreenFrame(width, height) : this.render(width);
 
 		// Composite overlays into the rendered lines (before differential compare)
 		if (this.overlayStack.length > 0) {
@@ -1290,7 +1444,7 @@ export class TUI extends Container {
 			let buffer = "\x1b[?2026h"; // Begin synchronized output
 			if (clear) {
 				buffer += this.deleteKittyImages(this.previousKittyImageIds);
-				buffer += "\x1b[2J\x1b[H\x1b[3J"; // Clear screen, home, then clear scrollback
+				buffer += fullscreen ? "\x1b[2J\x1b[H" : "\x1b[2J\x1b[H\x1b[3J";
 			}
 			for (let i = 0; i < newLines.length; i++) {
 				if (i > 0) buffer += "\r\n";
@@ -1354,7 +1508,7 @@ export class TUI extends Container {
 		// Height changes normally need a full re-render to keep the visible viewport aligned,
 		// but Termux changes height when the software keyboard shows or hides.
 		// In that environment, a full redraw causes the entire history to replay on every toggle.
-		if (heightChanged && !isTermuxSession()) {
+		if (heightChanged && (fullscreen || !isTermuxSession())) {
 			logRedraw(`terminal height changed (${this.previousHeight} -> ${height})`);
 			fullRender(true);
 			return;
@@ -1363,7 +1517,12 @@ export class TUI extends Container {
 		// Content shrunk below the working area and no overlays - re-render to clear empty rows
 		// (overlays need the padding, so only do this when no overlays are active)
 		// Configurable via setClearOnShrink() or PI_CLEAR_ON_SHRINK=0 env var
-		if (this.clearOnShrink && newLines.length < this.maxLinesRendered && this.overlayStack.length === 0) {
+		if (
+			!fullscreen &&
+			this.clearOnShrink &&
+			newLines.length < this.maxLinesRendered &&
+			this.overlayStack.length === 0
+		) {
 			logRedraw(`clearOnShrink (maxLinesRendered=${this.maxLinesRendered})`);
 			fullRender(true);
 			return;
@@ -1469,7 +1628,7 @@ export class TUI extends Container {
 		buffer += this.deleteChangedKittyImages(firstChanged, lastChanged);
 		const prevViewportBottom = prevViewportTop + height - 1;
 		const moveTargetRow = appendStart ? firstChanged - 1 : firstChanged;
-		if (moveTargetRow > prevViewportBottom) {
+		if (!fullscreen && moveTargetRow > prevViewportBottom) {
 			const currentScreenRow = Math.max(0, Math.min(height - 1, hardwareCursorRow - prevViewportTop));
 			const moveToBottom = height - 1 - currentScreenRow;
 			if (moveToBottom > 0) {
@@ -1484,13 +1643,16 @@ export class TUI extends Container {
 
 		// Move cursor to first changed line (use hardwareCursorRow for actual position)
 		const lineDiff = computeLineDiff(moveTargetRow);
-		if (lineDiff > 0) {
-			buffer += `\x1b[${lineDiff}B`; // Move down
-		} else if (lineDiff < 0) {
-			buffer += `\x1b[${-lineDiff}A`; // Move up
+		if (fullscreen) {
+			buffer += `\x1b[${firstChanged + 1};1H`;
+		} else {
+			if (lineDiff > 0) {
+				buffer += `\x1b[${lineDiff}B`; // Move down
+			} else if (lineDiff < 0) {
+				buffer += `\x1b[${-lineDiff}A`; // Move up
+			}
+			buffer += appendStart ? "\r\n" : "\r"; // Move to column 0
 		}
-
-		buffer += appendStart ? "\r\n" : "\r"; // Move to column 0
 
 		// Only render changed lines (firstChanged to lastChanged), not all lines to end
 		// This reduces flicker when only a single line changes (e.g., spinner animation)
@@ -1639,16 +1801,20 @@ export class TUI extends Container {
 		const targetRow = Math.max(0, Math.min(cursorPos.row, totalLines - 1));
 		const targetCol = Math.max(0, cursorPos.col);
 
-		// Move cursor from current position to target
-		const rowDelta = targetRow - this.hardwareCursorRow;
 		let buffer = "";
-		if (rowDelta > 0) {
-			buffer += `\x1b[${rowDelta}B`; // Move down
-		} else if (rowDelta < 0) {
-			buffer += `\x1b[${-rowDelta}A`; // Move up
+		if (this.fixedBottomComponent) {
+			buffer = `\x1b[${targetRow + 1};${targetCol + 1}H`;
+		} else {
+			// Move cursor from current position to target
+			const rowDelta = targetRow - this.hardwareCursorRow;
+			if (rowDelta > 0) {
+				buffer += `\x1b[${rowDelta}B`; // Move down
+			} else if (rowDelta < 0) {
+				buffer += `\x1b[${-rowDelta}A`; // Move up
+			}
+			// Move to absolute column (1-indexed)
+			buffer += `\x1b[${targetCol + 1}G`;
 		}
-		// Move to absolute column (1-indexed)
-		buffer += `\x1b[${targetCol + 1}G`;
 
 		if (buffer) {
 			this.terminal.write(buffer);
