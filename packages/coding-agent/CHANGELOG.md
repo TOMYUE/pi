@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Changed the interactive TUI to keep the composer fixed at the bottom while the transcript streams and scrolls independently.
+- Changed slash-command selection to use a searchable pop-out command palette while preserving command arguments and autocomplete.
+
 ## [0.82.1] - 2026-07-25
 
 ### New Features

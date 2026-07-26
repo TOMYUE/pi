@@ -1,6 +1,6 @@
 import { homedir } from "node:os";
 import * as path from "node:path";
-import { type AutocompleteProvider, CombinedAutocompleteProvider } from "@earendil-works/pi-tui";
+import { type AutocompleteProvider, CombinedAutocompleteProvider, type SlashCommand } from "@earendil-works/pi-tui";
 import { beforeAll, describe, expect, test, vi } from "vitest";
 import { type Component, Container, type Focusable, TUI } from "../../tui/src/tui.ts";
 import { VirtualTerminal } from "../../tui/test/virtual-terminal.ts";
@@ -390,11 +390,11 @@ describe("InteractiveMode.createBaseAutocompleteProvider", () => {
 			fdPath: null;
 		};
 
-		const createBaseAutocompleteProvider = (
+		const createSlashCommands = (
 			InteractiveMode as unknown as {
-				prototype: { createBaseAutocompleteProvider(this: FakeInteractiveMode): AutocompleteProvider };
+				prototype: { createSlashCommands(this: FakeInteractiveMode): SlashCommand[] };
 			}
-		).prototype.createBaseAutocompleteProvider;
+		).prototype.createSlashCommands;
 		const models = [
 			{ id: "gpt-5.2-codex", provider: "github-copilot", name: "GPT-5.2 Codex" },
 			{ id: "gpt-5.5", provider: "openai-codex", name: "GPT-5.5" },
@@ -413,7 +413,7 @@ describe("InteractiveMode.createBaseAutocompleteProvider", () => {
 			fdPath: null,
 		};
 
-		const provider = createBaseAutocompleteProvider.call(fakeThis);
+		const provider = new CombinedAutocompleteProvider(createSlashCommands.call(fakeThis), "/tmp", undefined);
 		const line = "/model codexgpt";
 		const suggestions = await provider.getSuggestions([line], 0, line.length, {
 			signal: new AbortController().signal,
@@ -441,11 +441,11 @@ describe("InteractiveMode.createBaseAutocompleteProvider", () => {
 			getLoginProviderOptions: () => AuthSelectorProvider[];
 		};
 
-		const createBaseAutocompleteProvider = (
+		const createSlashCommands = (
 			InteractiveMode as unknown as {
-				prototype: { createBaseAutocompleteProvider(this: FakeInteractiveMode): AutocompleteProvider };
+				prototype: { createSlashCommands(this: FakeInteractiveMode): SlashCommand[] };
 			}
-		).prototype.createBaseAutocompleteProvider;
+		).prototype.createSlashCommands;
 		const fakeThis: FakeInteractiveMode = {
 			session: {
 				scopedModels: [],
@@ -465,7 +465,7 @@ describe("InteractiveMode.createBaseAutocompleteProvider", () => {
 			],
 		};
 
-		const provider = createBaseAutocompleteProvider.call(fakeThis);
+		const provider = new CombinedAutocompleteProvider(createSlashCommands.call(fakeThis), "/tmp", undefined);
 		const line = "/login subscription anthrop";
 		const suggestions = await provider.getSuggestions([line], 0, line.length, {
 			signal: new AbortController().signal,
