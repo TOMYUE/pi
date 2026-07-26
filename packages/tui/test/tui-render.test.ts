@@ -25,9 +25,21 @@ class TestComponent implements Component {
 
 class LoggingVirtualTerminal extends VirtualTerminal {
 	private writes: string[] = [];
+	private lifecycleEvents: string[] = [];
+
+	override start(onInput: (data: string) => void, onResize: () => void): void {
+		this.lifecycleEvents.push("start");
+		super.start(onInput, onResize);
+	}
+
+	override stop(): void {
+		this.lifecycleEvents.push("stop");
+		super.stop();
+	}
 
 	override write(data: string): void {
 		this.writes.push(data);
+		this.lifecycleEvents.push(data);
 		super.write(data);
 	}
 
@@ -35,8 +47,13 @@ class LoggingVirtualTerminal extends VirtualTerminal {
 		return this.writes.join("");
 	}
 
+	getLifecycleEvents(): string[] {
+		return [...this.lifecycleEvents];
+	}
+
 	clearWrites(): void {
 		this.writes = [];
+		this.lifecycleEvents = [];
 	}
 }
 
@@ -894,6 +911,67 @@ describe("TUI fixed-bottom fullscreen rendering", () => {
 		tui.stop();
 	});
 
+	it("supports keyboard transcript paging and boundary navigation", async () => {
+		const terminal = new VirtualTerminal(30, 8);
+		const tui = new TUI(terminal);
+		const transcript = new TestComponent();
+		const composer = new TestComponent();
+		transcript.lines = Array.from({ length: 16 }, (_, i) => `Line ${i}`);
+		composer.lines = ["Composer top", "Composer bottom"];
+		tui.addChild(transcript);
+		tui.addChild(composer);
+		tui.setFixedBottom(composer);
+		tui.start();
+		await terminal.waitForRender();
+
+		terminal.sendInput("\x1b[5~");
+		await terminal.waitForRender();
+		assert.deepStrictEqual(terminal.getViewport().slice(0, 6), [
+			"Line 5",
+			"Line 6",
+			"Line 7",
+			"Line 8",
+			"Line 9",
+			"Line 10",
+		]);
+
+		terminal.sendInput("\x1b[1;5H");
+		await terminal.waitForRender();
+		assert.deepStrictEqual(terminal.getViewport().slice(0, 6), [
+			"Line 0",
+			"Line 1",
+			"Line 2",
+			"Line 3",
+			"Line 4",
+			"Line 5",
+		]);
+
+		terminal.sendInput("\x1b[1;5F");
+		await terminal.waitForRender();
+		assert.deepStrictEqual(terminal.getViewport().slice(0, 6), [
+			"Line 10",
+			"Line 11",
+			"Line 12",
+			"Line 13",
+			"Line 14",
+			"Line 15",
+		]);
+
+		terminal.sendInput("\x1b[5~");
+		terminal.sendInput("\x1b[6~");
+		await terminal.waitForRender();
+		assert.deepStrictEqual(terminal.getViewport().slice(0, 6), [
+			"Line 10",
+			"Line 11",
+			"Line 12",
+			"Line 13",
+			"Line 14",
+			"Line 15",
+		]);
+
+		tui.stop();
+	});
+
 	it("anchors the composer after a Termux height resize", async () => {
 		await withEnv({ TERMUX_VERSION: "1" }, async () => {
 			const terminal = new VirtualTerminal(30, 8);
@@ -1017,10 +1095,14 @@ describe("TUI fixed-bottom fullscreen rendering", () => {
 		tui.start();
 		await terminal.waitForRender();
 		assert.ok(terminal.getWrites().includes("\x1b[?1049h\x1b[H\x1b[?1000h\x1b[?1006h"));
+		const startEvents = terminal.getLifecycleEvents();
+		assert.ok(startEvents.findIndex((event) => event.includes("\x1b[?1049h")) < startEvents.indexOf("start"));
 
 		terminal.clearWrites();
 		tui.stop();
 		tui.stop();
+		const stopEvents = terminal.getLifecycleEvents();
+		assert.ok(stopEvents.indexOf("stop") < stopEvents.findIndex((event) => event.includes("\x1b[?1049l")));
 		assert.strictEqual(terminal.getWrites().match(/\x1b\[\?1049l/g)?.length, 1);
 		assert.strictEqual(terminal.getWrites().match(/\x1b\[\?1000l/g)?.length, 1);
 		assert.strictEqual(terminal.getWrites().match(/\x1b\[\?1006l/g)?.length, 1);

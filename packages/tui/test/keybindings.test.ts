@@ -11,6 +11,15 @@ describe("KeybindingsManager", () => {
 		assert.strictEqual(keybindings.matches("\x1b[106;5u", "tui.input.newLine"), true);
 	});
 
+	it("provides configurable fullscreen transcript navigation", () => {
+		const keybindings = new KeybindingsManager(TUI_KEYBINDINGS);
+
+		assert.deepStrictEqual(keybindings.getKeys("tui.transcript.pageUp"), ["pageUp"]);
+		assert.deepStrictEqual(keybindings.getKeys("tui.transcript.pageDown"), ["pageDown"]);
+		assert.deepStrictEqual(keybindings.getKeys("tui.transcript.top"), ["ctrl+home"]);
+		assert.deepStrictEqual(keybindings.getKeys("tui.transcript.bottom"), ["ctrl+end"]);
+	});
+
 	it("does not evict selector confirm when input submit is rebound", () => {
 		const keybindings = new KeybindingsManager(TUI_KEYBINDINGS, {
 			"tui.input.submit": ["enter", "ctrl+enter"],

@@ -6,6 +6,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { performance } from "node:perf_hooks";
+import { getKeybindings } from "./keybindings.ts";
 import { isKeyRelease, matchesKey } from "./keys.ts";
 import type { Terminal } from "./terminal.ts";
 import {
@@ -661,10 +662,6 @@ export class TUI extends Container {
 		if (!this.stopped) return;
 		this.stopped = false;
 		this.renderRequested = false;
-		this.terminal.start(
-			(data) => this.handleInput(data),
-			() => this.requestRender(),
-		);
 		if (this.fixedBottomComponent) {
 			this.previousLines = [];
 			this.previousKittyImageIds.clear();
@@ -677,6 +674,10 @@ export class TUI extends Container {
 			this.terminal.write("\x1b[?1049h\x1b[H\x1b[?1000h\x1b[?1006h");
 			this.fullscreenActive = true;
 		}
+		this.terminal.start(
+			(data) => this.handleInput(data),
+			() => this.requestRender(),
+		);
 		this.terminal.hideCursor();
 		if (this.terminalColorSchemeNotificationsEnabled) {
 			this.terminal.write("\x1b[?2031h");
@@ -735,8 +736,7 @@ export class TUI extends Container {
 			this.terminal.write("\x1b[?2031l");
 		}
 		if (this.fullscreenActive) {
-			this.terminal.write(`${this.deleteKittyImages(this.previousKittyImageIds)}\x1b[?1000l\x1b[?1006l\x1b[?1049l`);
-			this.fullscreenActive = false;
+			this.terminal.write(`${this.deleteKittyImages(this.previousKittyImageIds)}\x1b[?1000l\x1b[?1006l`);
 		} else if (this.previousLines.length > 0) {
 			// Move cursor to the end of inline content to prevent overwriting/artifacts on exit.
 			// Overwrite the inverted cursor with a normal space to clear the artifact
@@ -751,8 +751,12 @@ export class TUI extends Container {
 			this.terminal.write("\r\n");
 		}
 
-		this.terminal.showCursor();
 		this.terminal.stop();
+		if (this.fullscreenActive) {
+			this.terminal.write("\x1b[?1049l");
+			this.fullscreenActive = false;
+		}
+		this.terminal.showCursor();
 	}
 
 	requestRender(force = false): void {
@@ -836,6 +840,9 @@ export class TUI extends Container {
 		if (this.consumeCellSizeResponse(data)) {
 			return;
 		}
+		if (this.consumeFullscreenKeybinding(data)) {
+			return;
+		}
 
 		// Global debug key handler (Shift+Ctrl+D)
 		if (matchesKey(data, "shift+ctrl+d") && this.onDebug) {
@@ -912,6 +919,32 @@ export class TUI extends Container {
 			this.followTranscriptOutput = nextScrollTop === maxScrollTop;
 			this.requestRender();
 		}
+		return true;
+	}
+
+	private consumeFullscreenKeybinding(data: string): boolean {
+		if (!this.fixedBottomComponent || this.hasOverlay() || isKeyRelease(data)) return false;
+
+		const keybindings = getKeybindings();
+		const maxScrollTop = Math.max(0, this.transcriptContentHeight - this.transcriptViewportHeight);
+		const pageSize = Math.max(1, this.transcriptViewportHeight - 1);
+		let nextScrollTop: number;
+		if (keybindings.matches(data, "tui.transcript.pageUp")) {
+			nextScrollTop = this.transcriptScrollTop - pageSize;
+		} else if (keybindings.matches(data, "tui.transcript.pageDown")) {
+			nextScrollTop = this.transcriptScrollTop + pageSize;
+		} else if (keybindings.matches(data, "tui.transcript.top")) {
+			nextScrollTop = 0;
+		} else if (keybindings.matches(data, "tui.transcript.bottom")) {
+			nextScrollTop = maxScrollTop;
+		} else {
+			return false;
+		}
+
+		nextScrollTop = Math.max(0, Math.min(maxScrollTop, nextScrollTop));
+		this.transcriptScrollTop = nextScrollTop;
+		this.followTranscriptOutput = nextScrollTop === maxScrollTop;
+		this.requestRender();
 		return true;
 	}
 
