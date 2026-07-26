@@ -326,6 +326,7 @@ export class TUI extends Container {
 	private hardwareCursorRow = 0; // Actual terminal cursor row (may differ due to IME positioning)
 	private showHardwareCursor = process.env.PI_HARDWARE_CURSOR === "1";
 	private clearOnShrink = process.env.PI_CLEAR_ON_SHRINK === "1"; // Clear empty rows when content shrinks (default: off)
+	private mouseCapture = true;
 	private maxLinesRendered = 0; // Track terminal's working area (max lines ever rendered)
 	private previousViewportTop = 0; // Track previous viewport top for resize-aware cursor moves
 	private fullRedrawCount = 0;
@@ -393,6 +394,18 @@ export class TUI extends Container {
 	 */
 	setClearOnShrink(enabled: boolean): void {
 		this.clearOnShrink = enabled;
+	}
+
+	getMouseCapture(): boolean {
+		return this.mouseCapture;
+	}
+
+	/** Enable terminal mouse reports for fullscreen transcript wheel scrolling. */
+	setMouseCapture(enabled: boolean): void {
+		if (!this.stopped) {
+			throw new Error("setMouseCapture() must be called before TUI.start()");
+		}
+		this.mouseCapture = enabled;
 	}
 
 	/**
@@ -697,7 +710,7 @@ export class TUI extends Container {
 			this.hardwareCursorRow = 0;
 			this.maxLinesRendered = 0;
 			this.previousViewportTop = 0;
-			this.terminal.write("\x1b[?1049h\x1b[H\x1b[?1000h\x1b[?1006h");
+			this.terminal.write(`\x1b[?1049h\x1b[H${this.mouseCapture ? "\x1b[?1000h\x1b[?1006h" : ""}`);
 			this.fullscreenActive = true;
 		}
 		try {
@@ -769,7 +782,9 @@ export class TUI extends Container {
 			this.terminal.write("\x1b[?2031l");
 		}
 		if (this.fullscreenActive) {
-			this.terminal.write(`${this.deleteKittyImages(this.previousKittyImageIds)}\x1b[?1000l\x1b[?1006l`);
+			this.terminal.write(
+				`${this.deleteKittyImages(this.previousKittyImageIds)}\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l`,
+			);
 		} else if (this.previousLines.length > 0) {
 			// Move cursor to the end of inline content to prevent overwriting/artifacts on exit.
 			// Overwrite the inverted cursor with a normal space to clear the artifact
@@ -947,7 +962,7 @@ export class TUI extends Container {
 	}
 
 	private consumeFullscreenMouseEvent(data: string): boolean {
-		if (!this.fixedBottomComponent) return false;
+		if (!this.fixedBottomComponent || !this.mouseCapture) return false;
 
 		let button: number | undefined;
 		const sgrMatch = data.match(/^\x1b\[<(\d+);\d+;\d+[Mm]$/);

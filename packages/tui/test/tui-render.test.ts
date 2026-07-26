@@ -18,8 +18,12 @@ import { VirtualTerminal } from "./virtual-terminal.ts";
 
 class TestComponent implements Component {
 	lines: string[] = [];
+	inputs: string[] = [];
 	render(_width: number): string[] {
 		return this.lines;
+	}
+	handleInput(data: string): void {
+		this.inputs.push(data);
 	}
 	invalidate(): void {}
 }
@@ -857,7 +861,7 @@ describe("TUI fixed-bottom fullscreen rendering", () => {
 		assert.strictEqual(terminal.stopCalls, 1);
 		assert.strictEqual(
 			terminal.writes.join(""),
-			"\x1b[?1049h\x1b[H\x1b[?1000h\x1b[?1006h\x1b[?1000l\x1b[?1006l\x1b[?1049l",
+			"\x1b[?1049h\x1b[H\x1b[?1000h\x1b[?1006h\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?1049l",
 		);
 
 		tui.stop();
@@ -1071,65 +1075,68 @@ describe("TUI fixed-bottom fullscreen rendering", () => {
 		tui.stop();
 	});
 
-	it("supports keyboard transcript paging and boundary navigation", async () => {
-		const terminal = new VirtualTerminal(30, 8);
-		const tui = new TUI(terminal);
-		const transcript = new TestComponent();
-		const composer = new TestComponent();
-		transcript.lines = Array.from({ length: 16 }, (_, i) => `Line ${i}`);
-		composer.lines = ["Composer top", "Composer bottom"];
-		tui.addChild(transcript);
-		tui.addChild(composer);
-		tui.setFixedBottom(composer);
-		tui.start();
-		await terminal.waitForRender();
+	it("supports keyboard transcript paging and boundary navigation with mouse capture on or off", async () => {
+		for (const mouseCapture of [false, true]) {
+			const terminal = new VirtualTerminal(30, 8);
+			const tui = new TUI(terminal);
+			tui.setMouseCapture(mouseCapture);
+			const transcript = new TestComponent();
+			const composer = new TestComponent();
+			transcript.lines = Array.from({ length: 16 }, (_, i) => `Line ${i}`);
+			composer.lines = ["Composer top", "Composer bottom"];
+			tui.addChild(transcript);
+			tui.addChild(composer);
+			tui.setFixedBottom(composer);
+			tui.start();
+			await terminal.waitForRender();
 
-		terminal.sendInput("\x1b[5~");
-		await terminal.waitForRender();
-		assert.deepStrictEqual(terminal.getViewport().slice(0, 6), [
-			"Line 5",
-			"Line 6",
-			"Line 7",
-			"Line 8",
-			"Line 9",
-			"Line 10",
-		]);
+			terminal.sendInput("\x1b[5~");
+			await terminal.waitForRender();
+			assert.deepStrictEqual(terminal.getViewport().slice(0, 6), [
+				"Line 5",
+				"Line 6",
+				"Line 7",
+				"Line 8",
+				"Line 9",
+				"Line 10",
+			]);
 
-		terminal.sendInput("\x1b[1;5H");
-		await terminal.waitForRender();
-		assert.deepStrictEqual(terminal.getViewport().slice(0, 6), [
-			"Line 0",
-			"Line 1",
-			"Line 2",
-			"Line 3",
-			"Line 4",
-			"Line 5",
-		]);
+			terminal.sendInput("\x1b[1;5H");
+			await terminal.waitForRender();
+			assert.deepStrictEqual(terminal.getViewport().slice(0, 6), [
+				"Line 0",
+				"Line 1",
+				"Line 2",
+				"Line 3",
+				"Line 4",
+				"Line 5",
+			]);
 
-		terminal.sendInput("\x1b[1;5F");
-		await terminal.waitForRender();
-		assert.deepStrictEqual(terminal.getViewport().slice(0, 6), [
-			"Line 10",
-			"Line 11",
-			"Line 12",
-			"Line 13",
-			"Line 14",
-			"Line 15",
-		]);
+			terminal.sendInput("\x1b[1;5F");
+			await terminal.waitForRender();
+			assert.deepStrictEqual(terminal.getViewport().slice(0, 6), [
+				"Line 10",
+				"Line 11",
+				"Line 12",
+				"Line 13",
+				"Line 14",
+				"Line 15",
+			]);
 
-		terminal.sendInput("\x1b[5~");
-		terminal.sendInput("\x1b[6~");
-		await terminal.waitForRender();
-		assert.deepStrictEqual(terminal.getViewport().slice(0, 6), [
-			"Line 10",
-			"Line 11",
-			"Line 12",
-			"Line 13",
-			"Line 14",
-			"Line 15",
-		]);
+			terminal.sendInput("\x1b[5~");
+			terminal.sendInput("\x1b[6~");
+			await terminal.waitForRender();
+			assert.deepStrictEqual(terminal.getViewport().slice(0, 6), [
+				"Line 10",
+				"Line 11",
+				"Line 12",
+				"Line 13",
+				"Line 14",
+				"Line 15",
+			]);
 
-		tui.stop();
+			tui.stop();
+		}
 	});
 
 	it("anchors the composer after a Termux height resize", async () => {
@@ -1252,9 +1259,12 @@ describe("TUI fixed-bottom fullscreen rendering", () => {
 		tui.addChild(transcript);
 		tui.addChild(composer);
 		tui.setFixedBottom(composer);
+		tui.setFocus(composer);
 		tui.start();
 		await terminal.waitForRender();
 		assert.ok(terminal.getWrites().includes("\x1b[?1049h\x1b[H\x1b[?1000h\x1b[?1006h"));
+		terminal.sendInput("\x1b[<0;10;3M");
+		assert.deepStrictEqual(composer.inputs, []);
 		const startEvents = terminal.getLifecycleEvents();
 		assert.ok(startEvents.findIndex((event) => event.includes("\x1b[?1049h")) < startEvents.indexOf("start"));
 
@@ -1265,6 +1275,8 @@ describe("TUI fixed-bottom fullscreen rendering", () => {
 		assert.ok(stopEvents.indexOf("stop") < stopEvents.findIndex((event) => event.includes("\x1b[?1049l")));
 		assert.strictEqual(terminal.getWrites().match(/\x1b\[\?1049l/g)?.length, 1);
 		assert.strictEqual(terminal.getWrites().match(/\x1b\[\?1000l/g)?.length, 1);
+		assert.strictEqual(terminal.getWrites().match(/\x1b\[\?1002l/g)?.length, 1);
+		assert.strictEqual(terminal.getWrites().match(/\x1b\[\?1003l/g)?.length, 1);
 		assert.strictEqual(terminal.getWrites().match(/\x1b\[\?1006l/g)?.length, 1);
 
 		terminal.clearWrites();
@@ -1277,5 +1289,34 @@ describe("TUI fixed-bottom fullscreen rendering", () => {
 		assert.deepStrictEqual(terminal.getViewport(), ["Transcript", "", "", "", "Composer"]);
 		tui.stop();
 		assert.strictEqual(terminal.getWrites().match(/\x1b\[\?1049l/g)?.length, 1);
+	});
+
+	it("does not enable or consume mouse reports when capture is off and still disables all modes", async () => {
+		const terminal = new LoggingVirtualTerminal(30, 5);
+		const tui = new TUI(terminal);
+		const transcript = new TestComponent();
+		const composer = new TestComponent();
+		transcript.lines = ["Transcript"];
+		composer.lines = ["Composer"];
+		tui.addChild(transcript);
+		tui.addChild(composer);
+		tui.setFixedBottom(composer);
+		tui.setFocus(composer);
+		tui.setMouseCapture(false);
+
+		tui.start();
+		await terminal.waitForRender();
+		assert.ok(!terminal.getWrites().includes("\x1b[?1000h"));
+		assert.ok(!terminal.getWrites().includes("\x1b[?1006h"));
+
+		const report = "\x1b[<64;10;3M";
+		terminal.sendInput(report);
+		assert.deepStrictEqual(composer.inputs, [report]);
+
+		terminal.clearWrites();
+		tui.stop();
+		for (const mode of [1000, 1002, 1003, 1006]) {
+			assert.ok(terminal.getWrites().includes(`\x1b[?${mode}l`));
+		}
 	});
 });

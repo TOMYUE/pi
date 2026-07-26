@@ -60,7 +60,9 @@ Modifier combinations: `ctrl+shift+x`, `alt+ctrl+x`, `ctrl+shift+alt+x`, `ctrl+1
 
 ### TUI Transcript Navigation
 
-Available in the fullscreen fixed-composer interface.
+Available in the fullscreen fixed-composer interface. These bindings work regardless of the
+[`terminal.mouseCapture`](settings.md#terminal--images) setting, so transcript navigation remains available when
+mouse capture is disabled for native terminal text selection.
 
 | Keybinding id | Default | Description |
 |--------|---------|-------------|

@@ -463,6 +463,7 @@ export class InteractiveMode {
 		this.version = VERSION;
 		this.ui = new TUI(new ProcessTerminal(), this.settingsManager.getShowHardwareCursor(), getAgentDir());
 		this.ui.setClearOnShrink(this.settingsManager.getClearOnShrink());
+		this.ui.setMouseCapture(this.settingsManager.getMouseCapture());
 		this.transcriptContainer = new Container();
 		this.composerContainer = new Container();
 		this.headerContainer = new Container();
