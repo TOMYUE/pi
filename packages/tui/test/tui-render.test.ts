@@ -1249,6 +1249,108 @@ describe("TUI fixed-bottom fullscreen rendering", () => {
 		tui.stop();
 	});
 
+	it("clips partial iTerm2 image blocks at both transcript boundaries and preserves fully visible blocks", async () => {
+		setCapabilities({ images: "iterm2", trueColor: true, hyperlinks: true });
+		setCellDimensions({ widthPx: 10, heightPx: 10 });
+		try {
+			const image = new Image(
+				"AAAA",
+				"image/png",
+				{ fallbackColor: (value) => value },
+				{ maxWidthCells: 3 },
+				{ widthPx: 30, heightPx: 30 },
+			);
+			const imageLines = image.render(30);
+			const payload = imageLines.at(-1) ?? "";
+			assert.ok(payload.startsWith("\x1b[2A\x1b]1337;File="));
+
+			for (const { transcriptLines, scrollToTop, visible } of [
+				{ transcriptLines: [...imageLines, "after", "tail"], scrollToTop: false, visible: false },
+				{ transcriptLines: ["before", "top", ...imageLines, "after"], scrollToTop: true, visible: false },
+				{ transcriptLines: imageLines, scrollToTop: false, visible: true },
+			]) {
+				const terminal = new LoggingVirtualTerminal(30, 5);
+				const tui = new TUI(terminal);
+				const transcript = new TestComponent();
+				const composer = new TestComponent();
+				transcript.lines = transcriptLines;
+				composer.lines = ["Composer", "Input"];
+				tui.addChild(transcript);
+				tui.addChild(composer);
+				tui.setFixedBottom(composer);
+				tui.start();
+				await terminal.waitForRender();
+				if (scrollToTop) {
+					terminal.clearWrites();
+					terminal.sendInput("\x1b[1;5H");
+					await terminal.waitForRender();
+				}
+
+				assert.strictEqual(terminal.getWrites().includes("\x1b]1337;File="), visible);
+				assert.strictEqual(terminal.getWrites().includes(payload), visible);
+				tui.stop();
+			}
+		} finally {
+			resetCapabilitiesCache();
+			setCellDimensions({ widthPx: 9, heightPx: 18 });
+		}
+	});
+
+	it("restores cached iTerm2 and Kitty image blocks after scrolling them through viewport boundaries", async () => {
+		setCellDimensions({ widthPx: 10, heightPx: 10 });
+		try {
+			for (const protocol of ["iterm2", "kitty"] as const) {
+				setCapabilities({ images: protocol, trueColor: true, hyperlinks: true });
+				const image = new Image(
+					"AAAA",
+					"image/png",
+					{ fallbackColor: (value) => value },
+					{ maxWidthCells: 3 },
+					{ widthPx: 30, heightPx: 30 },
+				);
+				const imageLines = image.render(30);
+				const payload = protocol === "iterm2" ? (imageLines.at(-1) ?? "") : imageLines[0];
+				for (const { lines, clippedKey, restoreKey } of [
+					{
+						lines: ["l0", "l1", ...imageLines, "l5", "l6", "l7"],
+						clippedKey: "\x1b[1;5F",
+						restoreKey: "\x1b[1;5H",
+					},
+					{ lines: ["l0", "l1", "l2", ...imageLines, "l6"], clippedKey: "\x1b[1;5H", restoreKey: "\x1b[1;5F" },
+				]) {
+					const terminal = new LoggingVirtualTerminal(30, 7);
+					const tui = new TUI(terminal);
+					const transcript = new CountingContainer();
+					const history = new TestComponent();
+					const composer = new TestComponent();
+					history.lines = lines;
+					composer.lines = ["Composer", "Input"];
+					transcript.addChild(history);
+					tui.addChild(transcript);
+					tui.addChild(composer);
+					tui.setFixedBottom(composer);
+					tui.start();
+					await terminal.waitForRender();
+
+					terminal.clearWrites();
+					terminal.sendInput(clippedKey);
+					await terminal.waitForRender();
+					assert.ok(!terminal.getWrites().includes(payload));
+					terminal.clearWrites();
+					terminal.sendInput(restoreKey);
+					await terminal.waitForRender();
+					assert.ok(terminal.getWrites().includes(payload));
+					assert.strictEqual(transcript.renderCount, 1);
+					tui.stop();
+				}
+				resetCapabilitiesCache();
+			}
+		} finally {
+			resetCapabilitiesCache();
+			setCellDimensions({ widthPx: 9, heightPx: 18 });
+		}
+	});
+
 	it("enters and restores alternate screen and mouse modes exactly once", async () => {
 		const terminal = new LoggingVirtualTerminal(30, 5);
 		const tui = new TUI(terminal);

@@ -1441,14 +1441,27 @@ export class TUI extends Container {
 		this.transcriptRenderCache = undefined;
 	}
 
-	private findKittyImageBlocks(lines: string[]): ViewportImageBlock[] {
+	private findViewportImageBlocks(lines: string[]): ViewportImageBlock[] {
 		const blocks: ViewportImageBlock[] = [];
 		for (let i = 0; i < lines.length; i++) {
-			if (extractKittyImageIds(lines[i] ?? "").length === 0) continue;
-			const reservedRows = this.getKittyImageReservedRows(lines, i);
-			blocks.push({ start: i, end: i + reservedRows });
-			i += reservedRows - 1;
+			const line = lines[i] ?? "";
+			if (extractKittyImageIds(line).length > 0) {
+				const reservedRows = this.getKittyImageReservedRows(lines, i);
+				blocks.push({ start: i, end: i + reservedRows });
+				i += reservedRows - 1;
+				continue;
+			}
+
+			// Image.render emits an iTerm2 block as N empty reserved rows followed
+			// by exactly CSI N A + OSC 1337. Only recognize that supported shape.
+			const cursorUpMatch = line.match(/^\x1b\[([1-9]\d*)A\x1b\]1337;File=/);
+			if (!cursorUpMatch) continue;
+			const reservedRows = Number.parseInt(cursorUpMatch[1], 10);
+			const start = i - reservedRows;
+			if (start < 0 || lines.slice(start, i).some((reservedLine) => reservedLine !== "")) continue;
+			blocks.push({ start, end: i + 1 });
 		}
+		blocks.sort((a, b) => a.start - b.start);
 		return blocks;
 	}
 
@@ -1456,12 +1469,12 @@ export class TUI extends Container {
 		lines: string[],
 		start: number,
 		length: number,
-		imageBlocks = this.findKittyImageBlocks(lines),
+		imageBlocks = this.findViewportImageBlocks(lines),
 	): string[] {
 		const end = Math.min(lines.length, start + length);
 		const visibleLines = lines.slice(start, end);
 
-		// Kitty placements draw their declared row count directly in the terminal.
+		// Kitty placements and iTerm2 cursor-up payloads can draw across rows.
 		// Hide blocks that cross a viewport boundary so they cannot paint over the
 		// fixed composer or leave orphaned reserved rows at the top.
 		for (const block of imageBlocks) {
@@ -1490,7 +1503,7 @@ export class TUI extends Container {
 				if (child === fixedBottom) continue;
 				lines.push(...child.render(width));
 			}
-			transcript = { width, lines, imageBlocks: this.findKittyImageBlocks(lines) };
+			transcript = { width, lines, imageBlocks: this.findViewportImageBlocks(lines) };
 			this.transcriptRenderCache = transcript;
 			this.transcriptDirty = false;
 		}
