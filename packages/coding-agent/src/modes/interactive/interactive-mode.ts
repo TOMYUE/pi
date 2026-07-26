@@ -406,6 +406,7 @@ export class InteractiveMode {
 
 	// Shutdown state
 	private shutdownRequested = false;
+	private isSuspended = false;
 
 	// Extension UI state
 	private extensionSelector: ExtensionSelectorComponent | undefined = undefined;
@@ -3601,17 +3602,20 @@ export class InteractiveMode {
 		// dispatch and re-sends the signal if only its own listeners remain.
 
 		if (options?.fromSignal) {
-			// Signal-triggered shutdown (SIGTERM/SIGHUP). Emit extension cleanup
+			// Signal-triggered shutdown (SIGINT/SIGTERM/SIGHUP). Emit extension cleanup
 			// (session_shutdown) BEFORE touching the terminal. Extension teardown
 			// such as removing sockets does not write to the tty, so it must not be
 			// skipped if a later terminal-restore write fails on a dead or stalled
 			// terminal. If the terminal is gone, the restore writes below emit EIO,
 			// which the stdout/stderr error handler turns into emergencyTerminalExit;
 			// the render loop is already idle, so this cannot hot-spin (see #4144).
-			await this.runtimeHost.dispose();
-			this.themeController.disableAutoSync();
-			await this.ui.terminal.drainInput(1000);
-			this.stop();
+			try {
+				await this.runtimeHost.dispose();
+				this.themeController.disableAutoSync();
+				await this.ui.terminal.drainInput(1000);
+			} finally {
+				this.stop();
+			}
 			process.exit(0);
 		}
 
@@ -3621,9 +3625,11 @@ export class InteractiveMode {
 		// Drain any in-flight Kitty key release events before stopping.
 		// This prevents escape sequences from leaking to the parent shell over slow SSH.
 		this.themeController.disableAutoSync();
-		await this.ui.terminal.drainInput(1000);
-
-		this.stop();
+		try {
+			await this.ui.terminal.drainInput(1000);
+		} finally {
+			this.stop();
+		}
 		await this.runtimeHost.dispose();
 
 		const resumeCommand = formatResumeCommand(this.sessionManager);
@@ -3656,6 +3662,9 @@ export class InteractiveMode {
 	 */
 	private uncaughtCrash(error: Error): never {
 		if (this.isShuttingDown) {
+			try {
+				this.ui.stop();
+			} catch {}
 			process.exit(1);
 		}
 		this.isShuttingDown = true;
@@ -3684,13 +3693,14 @@ export class InteractiveMode {
 	private registerSignalHandlers(): void {
 		this.unregisterSignalHandlers();
 
-		const signals: NodeJS.Signals[] = ["SIGTERM"];
+		const signals: NodeJS.Signals[] = ["SIGINT", "SIGTERM"];
 		if (process.platform !== "win32") {
 			signals.push("SIGHUP");
 		}
 
 		for (const signal of signals) {
 			const handler = () => {
+				if (signal === "SIGINT" && this.isSuspended) return;
 				// SIGHUP no longer hard-exits: graceful shutdown emits session_shutdown
 				// first, then attempts terminal restore. A genuinely dead terminal
 				// surfaces as an EIO on the restore writes, which the stdout/stderr
@@ -3741,6 +3751,7 @@ export class InteractiveMode {
 
 		// Ignore SIGINT while suspended so Ctrl+C in the terminal does not
 		// kill the backgrounded process. The handler is removed on resume.
+		this.isSuspended = true;
 		const ignoreSigint = () => {};
 		process.on("SIGINT", ignoreSigint);
 
@@ -3748,6 +3759,7 @@ export class InteractiveMode {
 		process.once("SIGCONT", () => {
 			clearInterval(suspendKeepAlive);
 			process.removeListener("SIGINT", ignoreSigint);
+			this.isSuspended = false;
 			this.ui.start();
 			this.ui.requestRender(true);
 		});
@@ -3761,6 +3773,7 @@ export class InteractiveMode {
 		} catch (error) {
 			clearInterval(suspendKeepAlive);
 			process.removeListener("SIGINT", ignoreSigint);
+			this.isSuspended = false;
 			throw error;
 		}
 	}
@@ -6067,21 +6080,27 @@ export class InteractiveMode {
 	}
 
 	stop(): void {
-		if (this.settingsManager.getShowTerminalProgress()) {
-			this.ui.terminal.setProgress(false);
+		try {
+			if (this.settingsManager.getShowTerminalProgress()) {
+				this.ui.terminal.setProgress(false);
+			}
+			this.clearStatusIndicator();
+			this.themeController.disableAutoSync();
+			this.clearExtensionTerminalInputListeners();
+			this.footer.dispose();
+			this.footerDataProvider.dispose();
+			if (this.unsubscribe) {
+				this.unsubscribe();
+			}
+		} finally {
+			try {
+				if (this.isInitialized) {
+					this.ui.stop();
+				}
+			} finally {
+				this.isInitialized = false;
+				this.unregisterSignalHandlers();
+			}
 		}
-		this.clearStatusIndicator();
-		this.themeController.disableAutoSync();
-		this.clearExtensionTerminalInputListeners();
-		this.footer.dispose();
-		this.footerDataProvider.dispose();
-		if (this.unsubscribe) {
-			this.unsubscribe();
-		}
-		if (this.isInitialized) {
-			this.ui.stop();
-			this.isInitialized = false;
-		}
-		this.unregisterSignalHandlers();
 	}
 }

@@ -120,6 +120,32 @@ describe("InteractiveMode.shutdown ordering (#5080)", () => {
 		expect(context.isShuttingDown).toBe(true);
 	});
 
+	test("signal-triggered shutdown stops the TUI when disposal rejects", async () => {
+		const order: string[] = [];
+		const context = createContext(order);
+		vi.mocked(context.runtimeHost.dispose).mockRejectedValue(new Error("dispose failed"));
+
+		await expect(
+			(interactiveModePrototype as InteractiveModePrototypeWithShutdown).shutdown.call(context, {
+				fromSignal: true,
+			}),
+		).rejects.toThrow("dispose failed");
+
+		expect(order).toEqual(["stop"]);
+	});
+
+	test("interactive quit stops the TUI when input drain rejects", async () => {
+		const order: string[] = [];
+		const context = createContext(order);
+		vi.mocked(context.ui.terminal.drainInput).mockRejectedValue(new Error("drain failed"));
+
+		await expect(
+			(interactiveModePrototype as InteractiveModePrototypeWithShutdown).shutdown.call(context),
+		).rejects.toThrow("drain failed");
+
+		expect(order).toEqual(["stop"]);
+	});
+
 	test("interactive quit stops the TUI before emitting session_shutdown", async () => {
 		vi.spyOn(process, "exit").mockImplementation((() => {
 			throw new ProcessExitError();

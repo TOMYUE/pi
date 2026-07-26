@@ -9,6 +9,7 @@ type FakeUi = {
 
 type HandleCtrlZThis = {
 	ui: FakeUi;
+	isSuspended: boolean;
 };
 
 type ProcessSignalHandler = () => void;
@@ -16,6 +17,28 @@ type ProcessSignalHandler = () => void;
 type InteractiveModePrototypeWithHandleCtrlZ = {
 	handleCtrlZ(this: HandleCtrlZThis): void;
 };
+
+type RegisterSignalHandlersThis = {
+	isSuspended: boolean;
+	signalCleanupHandlers: Array<() => void>;
+	unregisterSignalHandlers: () => void;
+	shutdown: (options: { fromSignal: boolean }) => Promise<void>;
+	emergencyTerminalExit: () => never;
+	uncaughtCrash: (error: Error) => never;
+};
+
+type UncaughtCrashThis = {
+	isShuttingDown: boolean;
+	ui: { stop: () => void };
+	unregisterSignalHandlers: () => void;
+};
+
+type InteractiveModePrototypeWithSignalHandlers = {
+	registerSignalHandlers(this: RegisterSignalHandlersThis): void;
+	uncaughtCrash(this: UncaughtCrashThis, error: Error): never;
+};
+
+class ProcessExitError extends Error {}
 
 function callHandleCtrlZ(context: HandleCtrlZThis): void {
 	(interactiveModePrototype as InteractiveModePrototypeWithHandleCtrlZ).handleCtrlZ.call(context);
@@ -35,7 +58,11 @@ describe("InteractiveMode.handleCtrlZ", () => {
 			requestRender: vi.fn(),
 		};
 		const showStatus = vi.fn();
-		const context: HandleCtrlZThis & { showStatus: (message: string) => void } = { ui, showStatus };
+		const context: HandleCtrlZThis & { showStatus: (message: string) => void } = {
+			ui,
+			isSuspended: false,
+			showStatus,
+		};
 		const platformDescriptor = Object.getOwnPropertyDescriptor(process, "platform");
 		Object.defineProperty(process, "platform", {
 			configurable: true,
@@ -68,7 +95,7 @@ describe("InteractiveMode.handleCtrlZ", () => {
 			stop: vi.fn(),
 			requestRender: vi.fn(),
 		};
-		const context: HandleCtrlZThis = { ui };
+		const context: HandleCtrlZThis = { ui, isSuspended: false };
 		const keepAliveHandle = setTimeout(() => undefined, 0);
 		clearTimeout(keepAliveHandle);
 
@@ -103,11 +130,16 @@ describe("InteractiveMode.handleCtrlZ", () => {
 		expect(processKillSpy).toHaveBeenCalledWith(0, "SIGTSTP");
 		expect(sigintHandler).toBeDefined();
 		expect(sigcontHandler).toBeDefined();
+		expect(context.isSuspended).toBe(true);
+
+		sigintHandler?.();
+		expect(ui.start).not.toHaveBeenCalled();
 
 		sigcontHandler?.();
 
 		expect(clearIntervalSpy).toHaveBeenCalledWith(keepAliveHandle);
 		expect(removeListenerSpy).toHaveBeenCalledWith("SIGINT", sigintHandler);
+		expect(context.isSuspended).toBe(false);
 		expect(ui.start).toHaveBeenCalledTimes(1);
 		expect(ui.requestRender).toHaveBeenCalledWith(true);
 	});
@@ -118,7 +150,7 @@ describe("InteractiveMode.handleCtrlZ", () => {
 			stop: vi.fn(),
 			requestRender: vi.fn(),
 		};
-		const context: HandleCtrlZThis = { ui };
+		const context: HandleCtrlZThis = { ui, isSuspended: false };
 		const keepAliveHandle = setTimeout(() => undefined, 0);
 		clearTimeout(keepAliveHandle);
 		const suspendError = new Error("suspend failed");
@@ -143,7 +175,66 @@ describe("InteractiveMode.handleCtrlZ", () => {
 		expect(setIntervalSpy).toHaveBeenCalledTimes(1);
 		expect(clearIntervalSpy).toHaveBeenCalledWith(keepAliveHandle);
 		expect(removeListenerSpy).toHaveBeenCalledWith("SIGINT", expect.any(Function));
+		expect(context.isSuspended).toBe(false);
 		expect(ui.start).not.toHaveBeenCalled();
 		expect(ui.requestRender).not.toHaveBeenCalled();
+	});
+});
+
+describe("InteractiveMode signal handling", () => {
+	afterEach(() => {
+		vi.restoreAllMocks();
+	});
+
+	test("handles SIGINT gracefully while active and suppresses it while suspended", () => {
+		let sigintHandler: ProcessSignalHandler | undefined;
+		const context: RegisterSignalHandlersThis = {
+			isSuspended: false,
+			signalCleanupHandlers: [],
+			unregisterSignalHandlers: vi.fn(),
+			shutdown: vi.fn(async () => {}),
+			emergencyTerminalExit: vi.fn(() => {
+				throw new Error("unexpected emergency exit");
+			}),
+			uncaughtCrash: vi.fn(() => {
+				throw new Error("unexpected crash");
+			}),
+		};
+		vi.spyOn(process, "prependListener").mockImplementation(((event, listener) => {
+			if (event === "SIGINT") sigintHandler = listener as ProcessSignalHandler;
+			return process;
+		}) as typeof process.prependListener);
+		vi.spyOn(process.stdout, "on").mockImplementation((() => process.stdout) as typeof process.stdout.on);
+		vi.spyOn(process.stderr, "on").mockImplementation((() => process.stderr) as typeof process.stderr.on);
+
+		(interactiveModePrototype as InteractiveModePrototypeWithSignalHandlers).registerSignalHandlers.call(context);
+		expect(sigintHandler).toBeDefined();
+
+		sigintHandler?.();
+		expect(context.shutdown).toHaveBeenCalledWith({ fromSignal: true });
+
+		vi.mocked(context.shutdown).mockClear();
+		context.isSuspended = true;
+		sigintHandler?.();
+		expect(context.shutdown).not.toHaveBeenCalled();
+	});
+
+	test("restores the TUI for an uncaught crash during shutdown", () => {
+		const context: UncaughtCrashThis = {
+			isShuttingDown: true,
+			ui: { stop: vi.fn() },
+			unregisterSignalHandlers: vi.fn(),
+		};
+		vi.spyOn(process, "exit").mockImplementation((() => {
+			throw new ProcessExitError();
+		}) as typeof process.exit);
+
+		expect(() =>
+			(interactiveModePrototype as InteractiveModePrototypeWithSignalHandlers).uncaughtCrash.call(
+				context,
+				new Error("shutdown failed"),
+			),
+		).toThrow(ProcessExitError);
+		expect(context.ui.stop).toHaveBeenCalledTimes(1);
 	});
 });

@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { describe, it } from "node:test";
 import type { Terminal as XtermTerminalType } from "@xterm/headless";
 import { Image } from "../src/components/image.ts";
+import type { Terminal } from "../src/terminal.ts";
 import {
 	deleteKittyImage,
 	encodeKitty,
@@ -64,6 +65,33 @@ class LoggingVirtualTerminal extends VirtualTerminal {
 		this.writes = [];
 		this.lifecycleEvents = [];
 	}
+}
+
+class ThrowingTerminal implements Terminal {
+	readonly writes: string[] = [];
+	stopCalls = 0;
+	readonly columns = 80;
+	readonly rows = 24;
+	readonly kittyProtocolActive = false;
+
+	start(): void {
+		throw new Error("start failed");
+	}
+	stop(): void {
+		this.stopCalls++;
+	}
+	async drainInput(): Promise<void> {}
+	write(data: string): void {
+		this.writes.push(data);
+	}
+	moveBy(): void {}
+	hideCursor(): void {}
+	showCursor(): void {}
+	clearLine(): void {}
+	clearFromCursor(): void {}
+	clearScreen(): void {}
+	setTitle(): void {}
+	setProgress(): void {}
 }
 
 async function withEnv<T>(updates: Record<string, string | undefined>, run: () => Promise<T>): Promise<T> {
@@ -818,6 +846,24 @@ describe("TUI differential rendering", () => {
 });
 
 describe("TUI fixed-bottom fullscreen rendering", () => {
+	it("restores fullscreen terminal state when terminal startup fails", () => {
+		const terminal = new ThrowingTerminal();
+		const tui = new TUI(terminal);
+		const component = new TestComponent();
+		tui.addChild(component);
+		tui.setFixedBottom(component);
+
+		assert.throws(() => tui.start(), /start failed/);
+		assert.strictEqual(terminal.stopCalls, 1);
+		assert.strictEqual(
+			terminal.writes.join(""),
+			"\x1b[?1049h\x1b[H\x1b[?1000h\x1b[?1006h\x1b[?1000l\x1b[?1006l\x1b[?1049l",
+		);
+
+		tui.stop();
+		assert.strictEqual(terminal.stopCalls, 1);
+	});
+
 	it("reuses the transcript for scoped composer renders", async () => {
 		const terminal = new VirtualTerminal(40, 8);
 		const tui = new TUI(terminal);

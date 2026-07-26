@@ -700,10 +700,17 @@ export class TUI extends Container {
 			this.terminal.write("\x1b[?1049h\x1b[H\x1b[?1000h\x1b[?1006h");
 			this.fullscreenActive = true;
 		}
-		this.terminal.start(
-			(data) => this.handleInput(data),
-			() => (this.fixedBottomComponent ? this.requestRenderFor(this.fixedBottomComponent) : this.requestRender()),
-		);
+		try {
+			this.terminal.start(
+				(data) => this.handleInput(data),
+				() => (this.fixedBottomComponent ? this.requestRenderFor(this.fixedBottomComponent) : this.requestRender()),
+			);
+		} catch (error) {
+			try {
+				this.stop();
+			} catch {}
+			throw error;
+		}
 		this.terminal.hideCursor();
 		if (this.terminalColorSchemeNotificationsEnabled) {
 			this.terminal.write("\x1b[?2031h");
