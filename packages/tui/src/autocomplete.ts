@@ -220,6 +220,8 @@ export interface AutocompleteItem {
 	value: string;
 	label: string;
 	description?: string;
+	category?: string;
+	shortcut?: string;
 }
 
 type Awaitable<T> = T | Promise<T>;
@@ -228,6 +230,8 @@ export interface SlashCommand {
 	name: string;
 	description?: string;
 	argumentHint?: string;
+	category?: string;
+	shortcut?: string;
 	// Function to get argument completions for this command
 	// Returns null if no argument completion is available
 	getArgumentCompletions?(argumentPrefix: string): Awaitable<AutocompleteItem[] | null>;
@@ -272,6 +276,7 @@ export interface AutocompleteProvider {
 // Combined provider that handles both slash commands and file paths
 export class CombinedAutocompleteProvider implements AutocompleteProvider {
 	private commands: (SlashCommand | AutocompleteItem)[];
+	private commandItems?: Array<AutocompleteItem & { name: string }>;
 	private basePath: string;
 	private fdPath: string | null;
 
@@ -310,25 +315,22 @@ export class CombinedAutocompleteProvider implements AutocompleteProvider {
 
 			if (spaceIndex === -1) {
 				const prefix = textBeforeCursor.slice(1);
-				const commandItems = this.commands.map((cmd) => {
-					const name = "name" in cmd ? cmd.name : cmd.value;
-					const hint = "argumentHint" in cmd && cmd.argumentHint ? cmd.argumentHint : undefined;
-					const desc = cmd.description ?? "";
-					const fullDesc = hint ? (desc ? `${hint} — ${desc}` : hint) : desc;
+				this.commandItems ??= this.commands.map((command) => {
+					const name = "name" in command ? command.name : command.value;
+					const label = "name" in command ? command.name : command.label;
+					const hint = "argumentHint" in command && command.argumentHint ? command.argumentHint : undefined;
+					const description = command.description ?? "";
+					const fullDescription = hint ? (description ? `${hint} — ${description}` : hint) : description;
 					return {
 						name,
-						label: name,
-						description: fullDesc || undefined,
+						value: name,
+						label,
+						...(fullDescription && { description: fullDescription }),
+						...(command.category && { category: command.category }),
+						...(command.shortcut && { shortcut: command.shortcut }),
 					};
 				});
-
-				const filtered = fuzzyFilter(commandItems, prefix, (item) => item.name).map((item) => ({
-					value: item.name,
-					label: item.label,
-					...(item.description && { description: item.description }),
-				}));
-
-				if (filtered.length === 0) return null;
+				const filtered = fuzzyFilter(this.commandItems, prefix, (item) => item.name);
 
 				return {
 					items: filtered,

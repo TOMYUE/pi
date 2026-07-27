@@ -2506,6 +2506,184 @@ describe("Editor component", () => {
 			assert.strictEqual(editor.isShowingAutocomplete(), false);
 		});
 
+		it("renders slash commands as a command palette and removes only its query on cancel", async () => {
+			const editor = new Editor(createTestTUI(), defaultEditorTheme);
+			const provider = new CombinedAutocompleteProvider(
+				[
+					{ name: "settings", description: "Open settings menu", category: "pi" },
+					{ name: "model", description: "Select model", category: "pi" },
+				],
+				process.cwd(),
+			);
+			editor.setAutocompleteProvider(provider);
+
+			editor.handleInput("/");
+			await flushAutocomplete();
+
+			const palette = editor
+				.render(80)
+				.map((line) => stripVTControlCharacters(line))
+				.join("\n");
+			assert.match(palette, /^╭─ Command Palette .*╮/);
+			assert.match(palette, /│ {2}> {2}/);
+			assert.match(palette, /pi\s+settings\s+Open settings menu/);
+			assert.ok(!palette.includes("/settings"));
+			assert.match(palette, /↑↓ navigate\s+enter run\s+tab insert\s+escape close/);
+			assert.match(palette, /╰─+╯$/);
+
+			editor.setText("draft");
+			editor.handleInput("\x01");
+			editor.handleInput("/");
+			await flushAutocomplete();
+			assert.strictEqual(editor.getText(), "/draft");
+
+			editor.handleInput("\x1b");
+			assert.strictEqual(editor.getText(), "draft");
+			assert.strictEqual(editor.isShowingAutocomplete(), false);
+		});
+
+		it("keeps the command palette open for an unmatched query", async () => {
+			const editor = new Editor(createTestTUI(), defaultEditorTheme);
+			editor.setAutocompleteProvider(
+				new CombinedAutocompleteProvider(
+					[{ name: "model", description: "Select model", category: "pi" }],
+					process.cwd(),
+				),
+			);
+
+			for (const character of "/zzz") editor.handleInput(character);
+			await flushAutocomplete();
+
+			const palette = editor
+				.render(80)
+				.map((line) => stripVTControlCharacters(line))
+				.join("\n");
+			assert.strictEqual(editor.isShowingAutocomplete(), true);
+			assert.match(palette, /No matching commands/);
+
+			let submitted = false;
+			editor.onSubmit = () => {
+				submitted = true;
+			};
+			editor.handleInput("\r");
+			assert.strictEqual(submitted, false);
+		});
+
+		it("uses the live query and disables stale choices while suggestions are pending", async () => {
+			let resolvePending:
+				| ((suggestions: { items: Array<{ value: string; label: string }>; prefix: string }) => void)
+				| undefined;
+			const editor = new Editor(createTestTUI(), defaultEditorTheme);
+			editor.setAutocompleteProvider({
+				getSuggestions: async (lines, _cursorLine, cursorCol) => {
+					const prefix = (lines[0] ?? "").slice(0, cursorCol);
+					if (prefix === "/") return { items: [{ value: "model", label: "model" }], prefix };
+					return await new Promise((resolve) => {
+						resolvePending = resolve;
+					});
+				},
+				applyCompletion,
+			});
+			let submitted = "";
+			editor.onSubmit = (text) => {
+				submitted = text;
+			};
+
+			editor.handleInput("/");
+			await flushAutocomplete();
+			editor.handleInput("x");
+			assert.match(editor.render(80).map(stripVTControlCharacters).join("\n"), /│ {2}> x/);
+
+			editor.handleInput("\r");
+			editor.handleInput("\t");
+			assert.strictEqual(submitted, "");
+			assert.strictEqual(editor.getText(), "/x");
+
+			editor.handleInput("\x1b");
+			assert.strictEqual(editor.getText(), "");
+			resolvePending?.({ items: [], prefix: "/x" });
+			await flushAutocomplete();
+			assert.strictEqual(editor.isShowingAutocomplete(), false);
+		});
+
+		it("bounds the command palette to narrow and short terminals", async () => {
+			const provider = new CombinedAutocompleteProvider(
+				Array.from({ length: 20 }, (_, index) => ({
+					name: `very-long-command-name-${index}`,
+					description: "A description that is too long for the terminal",
+					category: "very-long-category",
+					shortcut: "ctrl+shift+something-long",
+				})),
+				process.cwd(),
+			);
+
+			for (const [width, height] of [
+				[1, 1],
+				[2, 3],
+				[4, 4],
+				[10, 6],
+				[30, 10],
+			] as const) {
+				const editor = new Editor(createTestTUI(width, height), defaultEditorTheme, { autocompleteMaxVisible: 20 });
+				editor.setAutocompleteProvider(provider);
+				editor.handleInput("/");
+				await flushAutocomplete();
+				const rendered = editor.render(width);
+
+				assert.ok(rendered.length <= height, `palette rendered ${rendered.length} rows at ${width}x${height}`);
+				for (const line of rendered) {
+					assert.ok(
+						visibleWidth(line) <= width,
+						`line rendered at width ${visibleWidth(line)} in ${width}x${height}`,
+					);
+				}
+			}
+		});
+
+		it("runs the highlighted command directly from the command palette", async () => {
+			const editor = new Editor(createTestTUI(), defaultEditorTheme);
+			const provider = new CombinedAutocompleteProvider(
+				[
+					{ name: "settings", description: "Open settings menu", category: "pi" },
+					{ name: "model", description: "Select model", category: "pi" },
+				],
+				process.cwd(),
+			);
+			let submitted = "";
+			editor.onSubmit = (text) => {
+				submitted = text;
+			};
+			editor.setAutocompleteProvider(provider);
+
+			editor.handleInput("/");
+			await flushAutocomplete();
+			editor.handleInput("\x1b[B");
+			editor.handleInput("\r");
+
+			assert.strictEqual(submitted, "/model");
+			assert.strictEqual(editor.getText(), "");
+			assert.strictEqual(editor.isShowingAutocomplete(), false);
+		});
+
+		it("runs only the selected command when the palette opens before a draft", async () => {
+			const editor = new Editor(createTestTUI(), defaultEditorTheme);
+			editor.setText("draft");
+			editor.handleInput("\x01");
+			editor.setAutocompleteProvider(
+				new CombinedAutocompleteProvider([{ name: "settings", description: "Open settings" }], process.cwd()),
+			);
+			let submitted = "";
+			editor.onSubmit = (text) => {
+				submitted = text;
+			};
+
+			editor.handleInput("/");
+			await flushAutocomplete();
+			editor.handleInput("\r");
+
+			assert.strictEqual(submitted, "/settings");
+		});
+
 		it("applies exact typed slash-argument value on Enter even when first item is highlighted", async () => {
 			const editor = new Editor(createTestTUI(), defaultEditorTheme);
 

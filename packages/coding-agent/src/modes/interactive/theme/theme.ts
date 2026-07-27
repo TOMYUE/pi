@@ -1273,6 +1273,10 @@ export function getSelectListTheme(): SelectListTheme {
 		description: (text: string) => theme.fg("muted", text),
 		scrollInfo: (text: string) => theme.fg("muted", text),
 		noMatch: (text: string) => theme.fg("muted", text),
+		category: (text: string) => theme.fg("dim", text),
+		command: (text: string) => theme.bold(theme.fg("text", text)),
+		shortcut: (text: string) => theme.bold(theme.fg("accent", text)),
+		selectedBackground: (text: string) => theme.bg("selectedBg", text),
 	};
 }
 
@@ -1280,6 +1284,12 @@ export function getEditorTheme(): EditorTheme {
 	return {
 		borderColor: (text: string) => theme.fg("borderMuted", text),
 		selectList: getSelectListTheme(),
+		commandPalette: {
+			border: (text: string) => theme.fg("borderMuted", text),
+			title: (text: string) => theme.bold(theme.fg("accent", text)),
+			prompt: (text: string) => theme.fg("accent", text),
+			hint: (text: string) => theme.fg("dim", text),
+		},
 	};
 }
 

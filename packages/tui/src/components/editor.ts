@@ -10,6 +10,7 @@ import {
 	getWordSegmenter,
 	isWhitespaceChar,
 	sliceByColumn,
+	truncateToWidth,
 	visibleWidth,
 } from "../utils.ts";
 import { findWordBackward, findWordForward } from "../word-navigation.ts";
@@ -228,6 +229,12 @@ interface LayoutLine {
 export interface EditorTheme {
 	borderColor: (str: string) => string;
 	selectList: SelectListTheme;
+	commandPalette?: {
+		border: (text: string) => string;
+		title: (text: string) => string;
+		prompt: (text: string) => string;
+		hint: (text: string) => string;
+	};
 }
 
 export interface EditorOptions {
@@ -238,6 +245,7 @@ export interface EditorOptions {
 const SLASH_COMMAND_SELECT_LIST_LAYOUT: SelectListLayoutOptions = {
 	minPrimaryColumnWidth: 12,
 	maxPrimaryColumnWidth: 32,
+	variant: "commandPalette",
 };
 
 const ATTACHMENT_AUTOCOMPLETE_DEBOUNCE_MS = 20;
@@ -298,6 +306,9 @@ export class Editor implements Component, Focusable {
 	private autocompleteList?: SelectList;
 	private autocompleteState: "regular" | "force" | null = null;
 	private autocompletePrefix: string = "";
+	private autocompleteResultText?: string;
+	private autocompleteResultLine?: number;
+	private autocompleteResultCol?: number;
 	private autocompleteMaxVisible: number = 5;
 	private autocompleteAbort?: AbortController;
 	private autocompleteDebounceTimer?: ReturnType<typeof setTimeout>;
@@ -480,6 +491,10 @@ export class Editor implements Component, Focusable {
 	}
 
 	render(width: number): string[] {
+		if (this.isCommandPaletteOpen()) {
+			return this.renderCommandPalette(width);
+		}
+
 		const maxPadding = Math.max(0, Math.floor((width - 1) / 2));
 		const paddingX = Math.min(this.paddingX, maxPadding);
 		const contentWidth = Math.max(1, width - paddingX * 2);
@@ -600,6 +615,59 @@ export class Editor implements Component, Focusable {
 		return result;
 	}
 
+	private isCommandPaletteOpen(): boolean {
+		return Boolean(this.autocompleteState && this.autocompleteList && this.getLiveCommandPalettePrefix());
+	}
+
+	private getLiveCommandPalettePrefix(): string | undefined {
+		if (this.state.cursorLine !== 0) return undefined;
+		const line = this.state.lines[0] ?? "";
+		const prefix = line.slice(0, this.state.cursorCol);
+		return prefix.startsWith("/") && !prefix.includes(" ") ? prefix : undefined;
+	}
+
+	private autocompleteResultMatchesInput(): boolean {
+		return (
+			this.autocompleteResultText === this.getText() &&
+			this.autocompleteResultLine === this.state.cursorLine &&
+			this.autocompleteResultCol === this.state.cursorCol
+		);
+	}
+
+	private renderCommandPalette(width: number): string[] {
+		const palette = this.theme.commandPalette;
+		const border = palette?.border ?? this.borderColor;
+		const title = palette?.title ?? ((text: string) => text);
+		const prompt = palette?.prompt ?? ((text: string) => text);
+		const hint = palette?.hint ?? this.theme.selectList.description;
+		const innerWidth = Math.max(0, width - 2);
+		const query = this.getLiveCommandPalettePrefix()?.slice(1) ?? "";
+		const queryCursor = this.focused ? CURSOR_MARKER : "";
+		const topLabel = truncateToWidth(`─ ${title("Command Palette")} `, innerWidth, "");
+		const top = `${border("╭")}${topLabel}${border(`${"─".repeat(Math.max(0, innerWidth - visibleWidth(topLabel)))}╮`)}`;
+		const emptyLine = `${border("│")}${" ".repeat(innerWidth)}${border("│")}`;
+		const queryText = truncateToWidth(`  ${prompt(">")} ${query}${queryCursor}\x1b[7m \x1b[0m`, innerWidth, "");
+		const queryLine = `${border("│")}${queryText}${" ".repeat(Math.max(0, innerWidth - visibleWidth(queryText)))}${border("│")}`;
+		const listWidth = Math.max(1, innerWidth - 2);
+		const listLines = this.tui.terminal.rows >= 4 ? (this.autocompleteList?.render(listWidth) ?? []) : [];
+		const framedList = listLines.map((line) => {
+			const content = truncateToWidth(line, listWidth, "");
+			const padding = " ".repeat(Math.max(0, listWidth - visibleWidth(content)));
+			return `${border("│")} ${content}${padding} ${border("│")}`;
+		});
+		const footerText = truncateToWidth(hint("  ↑↓ navigate   enter run   tab insert   escape close"), innerWidth, "");
+		const footer = `${border("│")}${footerText}${" ".repeat(Math.max(0, innerWidth - visibleWidth(footerText)))}${border("│")}`;
+		const bottom = border(`╰${"─".repeat(innerWidth)}╯`);
+
+		const result =
+			this.tui.terminal.rows < 8
+				? [top, queryLine, ...framedList, bottom]
+				: [top, emptyLine, queryLine, emptyLine, ...framedList, emptyLine, footer, bottom];
+		return result
+			.slice(0, Math.max(0, this.tui.terminal.rows))
+			.map((line) => truncateToWidth(line, Math.max(0, width), ""));
+	}
+
 	handleInput(data: string): void {
 		const kb = getKeybindings();
 
@@ -664,6 +732,14 @@ export class Editor implements Component, Focusable {
 		// Handle autocomplete mode
 		if (this.autocompleteState && this.autocompleteList) {
 			if (kb.matches(data, "tui.select.cancel")) {
+				if (this.isCommandPaletteOpen()) {
+					const livePrefix = this.getLiveCommandPalettePrefix() ?? "";
+					const line = this.state.lines[this.state.cursorLine] ?? "";
+					const prefixStart = Math.max(0, this.state.cursorCol - livePrefix.length);
+					this.state.lines[this.state.cursorLine] = line.slice(0, prefixStart) + line.slice(this.state.cursorCol);
+					this.setCursorCol(prefixStart);
+					if (this.onChange) this.onChange(this.getText());
+				}
 				this.cancelAutocomplete();
 				return;
 			}
@@ -674,6 +750,9 @@ export class Editor implements Component, Focusable {
 			}
 
 			if (kb.matches(data, "tui.input.tab")) {
+				if (this.isCommandPaletteOpen() && !this.autocompleteResultMatchesInput()) {
+					return;
+				}
 				const selected = this.autocompleteList.getSelectedItem();
 				if (selected && this.autocompleteProvider) {
 					this.pushUndoSnapshot();
@@ -695,7 +774,13 @@ export class Editor implements Component, Focusable {
 			}
 
 			if (kb.matches(data, "tui.select.confirm")) {
+				if (this.isCommandPaletteOpen() && !this.autocompleteResultMatchesInput()) {
+					return;
+				}
 				const selected = this.autocompleteList.getSelectedItem();
+				if (!selected && this.isCommandPaletteOpen()) {
+					return;
+				}
 				if (selected && this.autocompleteProvider) {
 					this.pushUndoSnapshot();
 					this.lastAction = null;
@@ -706,14 +791,17 @@ export class Editor implements Component, Focusable {
 						selected,
 						this.autocompletePrefix,
 					);
-					this.state.lines = result.lines;
-					this.state.cursorLine = result.cursorLine;
-					this.setCursorCol(result.cursorCol);
-
 					if (this.autocompletePrefix.startsWith("/")) {
+						const command = (result.lines[result.cursorLine] ?? "").slice(0, result.cursorCol).trim();
+						this.state.lines = [command];
+						this.state.cursorLine = 0;
+						this.setCursorCol(command.length);
 						this.cancelAutocomplete();
 						// Fall through to submit
 					} else {
+						this.state.lines = result.lines;
+						this.state.cursorLine = result.cursorLine;
+						this.setCursorCol(result.cursorCol);
 						this.cancelAutocomplete();
 						if (this.onChange) this.onChange(this.getText());
 						return;
@@ -2134,7 +2222,11 @@ export class Editor implements Component, Focusable {
 		items: Array<{ value: string; label: string; description?: string }>,
 	): SelectList {
 		const layout = prefix.startsWith("/") ? SLASH_COMMAND_SELECT_LIST_LAYOUT : undefined;
-		return new SelectList(items, this.autocompleteMaxVisible, this.theme.selectList, layout);
+		const paletteFixedRows = this.tui.terminal.rows < 8 ? 3 : 7;
+		const maxVisible = prefix.startsWith("/")
+			? Math.max(1, Math.min(Math.max(this.autocompleteMaxVisible, 12), this.tui.terminal.rows - paletteFixedRows))
+			: this.autocompleteMaxVisible;
+		return new SelectList(items, maxVisible, this.theme.selectList, layout);
 	}
 
 	private tryTriggerAutocomplete(explicitTab: boolean = false): void {
@@ -2262,7 +2354,13 @@ export class Editor implements Component, Focusable {
 
 		this.autocompleteAbort = undefined;
 
-		if (!suggestions || !Array.isArray(suggestions.items) || suggestions.items.length === 0) {
+		if (!suggestions || !Array.isArray(suggestions.items)) {
+			this.cancelAutocomplete();
+			this.tui.requestRender();
+			return;
+		}
+
+		if (suggestions.items.length === 0 && !suggestions.prefix.startsWith("/")) {
 			this.cancelAutocomplete();
 			this.tui.requestRender();
 			return;
@@ -2287,7 +2385,13 @@ export class Editor implements Component, Focusable {
 			return;
 		}
 
-		this.applyAutocompleteSuggestions(suggestions, options.force ? "force" : "regular");
+		this.applyAutocompleteSuggestions(
+			suggestions,
+			options.force ? "force" : "regular",
+			snapshotText,
+			snapshotLine,
+			snapshotCol,
+		);
 		this.tui.requestRender();
 	}
 
@@ -2307,8 +2411,17 @@ export class Editor implements Component, Focusable {
 		);
 	}
 
-	private applyAutocompleteSuggestions(suggestions: AutocompleteSuggestions, state: "regular" | "force"): void {
+	private applyAutocompleteSuggestions(
+		suggestions: AutocompleteSuggestions,
+		state: "regular" | "force",
+		text: string,
+		cursorLine: number,
+		cursorCol: number,
+	): void {
 		this.autocompletePrefix = suggestions.prefix;
+		this.autocompleteResultText = text;
+		this.autocompleteResultLine = cursorLine;
+		this.autocompleteResultCol = cursorCol;
 		this.autocompleteList = this.createAutocompleteList(suggestions.prefix, suggestions.items);
 
 		const bestMatchIndex = this.getBestAutocompleteMatchIndex(suggestions.items, suggestions.prefix);
@@ -2333,6 +2446,9 @@ export class Editor implements Component, Focusable {
 		this.autocompleteState = null;
 		this.autocompleteList = undefined;
 		this.autocompletePrefix = "";
+		this.autocompleteResultText = undefined;
+		this.autocompleteResultLine = undefined;
+		this.autocompleteResultCol = undefined;
 	}
 
 	private cancelAutocomplete(): void {

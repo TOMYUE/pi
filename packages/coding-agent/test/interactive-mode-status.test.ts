@@ -388,6 +388,7 @@ describe("InteractiveMode.createBaseAutocompleteProvider", () => {
 			skillCommands: Map<string, string>;
 			sessionManager: { getCwd: () => string };
 			fdPath: null;
+			getAppKeyDisplay: () => string;
 		};
 
 		const createBaseAutocompleteProvider = (
@@ -411,6 +412,7 @@ describe("InteractiveMode.createBaseAutocompleteProvider", () => {
 			skillCommands: new Map(),
 			sessionManager: { getCwd: () => "/tmp" },
 			fdPath: null,
+			getAppKeyDisplay: () => "ctrl+l",
 		};
 
 		const provider = createBaseAutocompleteProvider.call(fakeThis);
@@ -439,6 +441,7 @@ describe("InteractiveMode.createBaseAutocompleteProvider", () => {
 			sessionManager: { getCwd: () => string };
 			fdPath: null;
 			getLoginProviderOptions: () => AuthSelectorProvider[];
+			getAppKeyDisplay: () => string;
 		};
 
 		const createBaseAutocompleteProvider = (
@@ -458,6 +461,7 @@ describe("InteractiveMode.createBaseAutocompleteProvider", () => {
 			skillCommands: new Map(),
 			sessionManager: { getCwd: () => "/tmp" },
 			fdPath: null,
+			getAppKeyDisplay: () => "ctrl+l",
 			getLoginProviderOptions: () => [
 				{ id: "anthropic", name: "Anthropic", authType: "oauth" },
 				{ id: "anthropic", name: "Anthropic", authType: "api_key" },
