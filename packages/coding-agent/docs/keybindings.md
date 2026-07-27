@@ -58,6 +58,19 @@ Modifier combinations: `ctrl+shift+x`, `alt+ctrl+x`, `ctrl+shift+alt+x`, `ctrl+1
 | `tui.input.submit` | `enter` | Submit input |
 | `tui.input.tab` | `tab` | Tab / autocomplete |
 
+### TUI Transcript Navigation
+
+Available in the fullscreen fixed-composer interface. These bindings work regardless of the
+[`terminal.mouseCapture`](settings.md#terminal--images) setting, so transcript navigation remains available when
+mouse capture is disabled for native terminal text selection.
+
+| Keybinding id | Default | Description |
+|--------|---------|-------------|
+| `tui.transcript.pageUp` | `pageUp` | Scroll transcript up one page |
+| `tui.transcript.pageDown` | `pageDown` | Scroll transcript down one page |
+| `tui.transcript.top` | `ctrl+home` | Scroll to transcript start |
+| `tui.transcript.bottom` | `ctrl+end` | Scroll to transcript end and resume following output |
+
 ### TUI Kill Ring
 
 | Keybinding id | Default | Description |

@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Changed the interactive TUI to keep the composer fixed at the bottom while the transcript streams and scrolls independently.
+- Changed slash-command selection to use a searchable pop-out command palette while preserving command arguments and autocomplete.
+
+### Fixed
+
+- Fixed model registry reloads unexpectedly fetching remote catalogs instead of only reloading local model configuration.
+- Fixed direct bash execution returning before truncated full-output files were completely written.
+
 ## [0.82.1] - 2026-07-25
 
 ### New Features

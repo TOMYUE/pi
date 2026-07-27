@@ -178,6 +178,7 @@ Keep `retry.provider.maxRetries` at `0` unless provider-level retries are explic
 | `terminal.showImages` | boolean | `true` | Show images in terminal (if supported) |
 | `terminal.imageWidthCells` | number | `60` | Preferred inline image width in terminal cells |
 | `terminal.clearOnShrink` | boolean | `false` | Clear empty rows when content shrinks (can cause flicker) |
+| `terminal.mouseCapture` | boolean | `false` | Capture mouse reports in the fullscreen UI for wheel transcript scrolling. When disabled, native terminal text selection and copy work without holding Shift. Can also be enabled with `PI_MOUSE_CAPTURE=1` when unset |
 | `images.autoResize` | boolean | `true` | Resize images to 2000x2000 max |
 | `images.blockImages` | boolean | `false` | Block all images from being sent to LLM |
 

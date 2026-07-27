@@ -420,6 +420,33 @@ describe("SettingsManager", () => {
 		});
 	});
 
+	describe("terminal.mouseCapture", () => {
+		const originalMouseCapture = process.env.PI_MOUSE_CAPTURE;
+
+		afterEach(() => {
+			if (originalMouseCapture === undefined) delete process.env.PI_MOUSE_CAPTURE;
+			else process.env.PI_MOUSE_CAPTURE = originalMouseCapture;
+		});
+
+		it("defaults off and supports the environment override", () => {
+			delete process.env.PI_MOUSE_CAPTURE;
+			expect(SettingsManager.inMemory().getMouseCapture()).toBe(false);
+			process.env.PI_MOUSE_CAPTURE = "1";
+			expect(SettingsManager.inMemory().getMouseCapture()).toBe(true);
+		});
+
+		it("gives persisted settings precedence and persists changes", async () => {
+			process.env.PI_MOUSE_CAPTURE = "1";
+			const manager = SettingsManager.create(projectDir, agentDir);
+			manager.setMouseCapture(false);
+			await manager.flush();
+
+			expect(manager.getMouseCapture()).toBe(false);
+			const savedSettings = JSON.parse(readFileSync(join(agentDir, "settings.json"), "utf-8"));
+			expect(savedSettings.terminal.mouseCapture).toBe(false);
+		});
+	});
+
 	describe("shellCommandPrefix", () => {
 		it("should load shellCommandPrefix from settings", () => {
 			const settingsPath = join(agentDir, "settings.json");

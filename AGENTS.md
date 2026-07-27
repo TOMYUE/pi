@@ -34,6 +34,42 @@
 - For ad-hoc scripts, `write` them to a temp file (e.g. `/tmp`), run, edit if needed, remove when done. Don't embed multi-line scripts in `bash` commands.
 - Never commit unless the user asks.
 
+## Local from-source pi
+
+Use this to verify the current pi experience while developing. Prefer it over the global `pi` binary so an installed release is never overwritten or confused with workspace sources.
+
+| Command | Agent dir | When to use |
+|---------|-----------|-------------|
+| `./dev-pi.sh` | `.pi-dev/agent` (isolated) | Default for interactive checks and smoke prompts |
+| `./pi-test.sh` | `~/.pi/agent` (or `PI_CODING_AGENT_DIR`) | Sources only; shares global config unless env is set |
+| `pi` (global install) | `~/.pi/agent` | Other workspaces; leave alone |
+
+Rules:
+
+- Do not `npm link`, global-install this workspace, or alias global `pi` to repo sources.
+- Do not commit `.pi-dev/` or `dev-pi.local.sh` (gitignored; may hold API keys and sessions).
+- Put local provider defaults and credentials only under `.pi-dev/agent/` (`settings.json`, `auth.json`), or export keys from untracked `dev-pi.local.sh`.
+- Project resources still load from repo `.pi/` after trust; isolation is for the user agent dir only.
+- Override isolation when needed: `PI_CODING_AGENT_DIR=/tmp/scratch ./dev-pi.sh`.
+
+Setup (once per machine):
+
+```bash
+mkdir -p .pi-dev/agent
+# optional defaults, e.g. DeepSeek:
+#   .pi-dev/agent/settings.json  → defaultProvider / defaultModel
+#   .pi-dev/agent/auth.json      → { "deepseek": { "type": "api_key", "key": "..." } }
+# or: dev-pi.local.sh → export DEEPSEEK_API_KEY=...
+```
+
+Smoke:
+
+```bash
+./dev-pi.sh --version
+./dev-pi.sh -p "Say exactly: ok"
+./dev-pi.sh --provider deepseek --model deepseek-v4-flash -p "hi"
+```
+
 ## Dependency and Install Security
 
 - Treat npm dep and lockfile changes as reviewed code. Direct external deps stay pinned to exact versions.

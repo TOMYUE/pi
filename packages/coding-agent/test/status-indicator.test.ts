@@ -19,14 +19,14 @@ describe("status indicators", () => {
 	it("disposes retry countdown updates", () => {
 		initTheme("dark");
 		vi.useFakeTimers();
-		const requestRender = vi.fn();
-		const tui = { requestRender } as unknown as TUI;
+		const requestRenderFor = vi.fn();
+		const tui = { requestRenderFor } as unknown as TUI;
 		const indicator = new RetryStatusIndicator(tui, 1, 3, 1000);
-		const callsBeforeDispose = requestRender.mock.calls.length;
+		const callsBeforeDispose = requestRenderFor.mock.calls.length;
 
 		indicator.dispose();
 		vi.advanceTimersByTime(2000);
 
-		expect(requestRender).toHaveBeenCalledTimes(callsBeforeDispose);
+		expect(requestRenderFor).toHaveBeenCalledTimes(callsBeforeDispose);
 	});
 });

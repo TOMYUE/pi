@@ -57,6 +57,7 @@ npm run build:offline # Rebuild using existing model data without network access
 npm run check         # Lint, format, and type check
 ./test.sh            # Run tests (skips LLM-dependent tests without API keys)
 ./pi-test.sh         # Run pi from sources (can be run from any directory)
+./dev-pi.sh          # Same, with isolated .pi-dev/agent (does not touch global pi / ~/.pi/agent)
 ```
 
 ## Building standalone binaries from release source
