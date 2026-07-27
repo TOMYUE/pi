@@ -88,6 +88,28 @@ describe("CommandPaletteComponent", () => {
 		expect(onCancel).toHaveBeenCalledWith();
 	});
 
+	test("finds contributed commands by plugin, prompt, and skill source", () => {
+		const commands: SlashCommand[] = [
+			{ name: "deploy", description: "Deploy project", category: "extension" },
+			{ name: "review", description: "Review changes", category: "prompt" },
+			{ name: "skill:inspect", description: "Inspect code", category: "skill" },
+		];
+
+		for (const [query, expectedName, expectedText] of [
+			["plugin", "deploy", "deploy"],
+			["prompt", "review", "review"],
+			["skill", "skill:inspect", "Inspect code"],
+		] as const) {
+			const palette = createPalette(commands);
+			for (const character of query) palette.handleInput(character);
+			const output = renderText(palette);
+			expect(output).toContain(expectedText);
+			for (const command of commands) {
+				if (command.name !== expectedName) expect(output).not.toContain(command.name);
+			}
+		}
+	});
+
 	test("renders within narrow widths", () => {
 		const palette = createPalette([{ name: "model", description: "A long command description" }]);
 		for (const width of [1, 4, 12, 40]) {
@@ -142,9 +164,16 @@ describe("InteractiveMode slash-command aggregation", () => {
 
 		const commands = createSlashCommands.call(fakeThis);
 		const names = commands.map((command) => command.name);
+		const categories = Object.fromEntries(commands.map((command) => [command.name, command.category]));
 
 		expect(names).toEqual(expect.arrayContaining(BUILTIN_SLASH_COMMANDS.map((command) => command.name)));
 		expect(names).toEqual(expect.arrayContaining(["review", "deploy", "tools:model", "skill:inspect"]));
+		expect(categories).toMatchObject({
+			review: "prompt",
+			deploy: "extension",
+			"tools:model": "extension",
+			"skill:inspect": "skill",
+		});
 		expect(commands.find((command) => command.name === "deploy")?.getArgumentCompletions).toBe(
 			extensionArgumentCompletion,
 		);

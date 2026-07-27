@@ -84,9 +84,10 @@ export class CommandPaletteComponent implements Component, Focusable {
 			}
 		}
 
-		this.filteredCommands = fuzzyFilter(this.commands, query, (command) =>
-			[command.name, command.argumentHint, command.description].filter(Boolean).join(" "),
-		);
+		this.filteredCommands = fuzzyFilter(this.commands, query, (command) => {
+			const category = command.category === "extension" ? "extension plugin" : command.category;
+			return [category, command.name, command.argumentHint, command.description].filter(Boolean).join(" ");
+		});
 		this.selectedIndex = 0;
 	}
 
