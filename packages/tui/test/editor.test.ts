@@ -2606,6 +2606,35 @@ describe("Editor component", () => {
 			assert.strictEqual(editor.isShowingAutocomplete(), false);
 		});
 
+		it("starts a current request without waiting for an aborted provider", async () => {
+			const resolvers = new Map<
+				string,
+				(suggestions: { items: Array<{ value: string; label: string }>; prefix: string }) => void
+			>();
+			const editor = new Editor(createTestTUI(), defaultEditorTheme);
+			editor.setAutocompleteProvider({
+				getSuggestions: async (lines, _cursorLine, cursorCol) => {
+					const prefix = (lines[0] ?? "").slice(0, cursorCol);
+					return await new Promise((resolve) => resolvers.set(prefix, resolve));
+				},
+				applyCompletion,
+			});
+
+			editor.handleInput("/");
+			editor.handleInput("m");
+			assert.deepStrictEqual([...resolvers.keys()], ["/", "/m"]);
+
+			resolvers.get("/m")?.({ items: [{ value: "model", label: "model" }], prefix: "/m" });
+			await flushAutocomplete();
+			assert.match(editor.render(80).map(stripVTControlCharacters).join("\n"), /model/);
+
+			resolvers.get("/")?.({ items: [{ value: "help", label: "help" }], prefix: "/" });
+			await flushAutocomplete();
+			const rendered = editor.render(80).map(stripVTControlCharacters).join("\n");
+			assert.match(rendered, /model/);
+			assert.ok(!rendered.includes("help"));
+		});
+
 		it("bounds the command palette to narrow and short terminals", async () => {
 			const provider = new CombinedAutocompleteProvider(
 				Array.from({ length: 20 }, (_, index) => ({

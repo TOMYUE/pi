@@ -2289,9 +2289,7 @@ export class Editor implements Component, Focusable {
 		startToken: number,
 		options: { force: boolean; explicitTab: boolean },
 	): Promise<void> {
-		const previousTask = this.autocompleteRequestTask;
 		this.autocompleteRequestTask = (async () => {
-			await previousTask;
 			if (startToken !== this.autocompleteStartToken || !this.autocompleteProvider) {
 				return;
 			}
