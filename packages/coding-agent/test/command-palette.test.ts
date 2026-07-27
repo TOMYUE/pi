@@ -29,7 +29,7 @@ function createPalette(
 	callbacks: {
 		onSubmit?: (command: SlashCommand) => void;
 		onComplete?: (text: string) => void;
-		onCancel?: (draft: string) => void;
+		onCancel?: () => void;
 	} = {},
 ): CommandPaletteComponent {
 	return new CommandPaletteComponent(commands, {
@@ -58,8 +58,8 @@ describe("CommandPaletteComponent", () => {
 
 		palette.handleInput("h");
 		palette.handleInput("k");
-		expect(renderText(palette)).toContain("/hotkeys");
-		expect(renderText(palette)).not.toContain("/model");
+		expect(renderText(palette)).toContain("hotkeys");
+		expect(renderText(palette)).not.toContain("model");
 
 		palette.handleInput("\r");
 		expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ name: "hotkeys" }));
@@ -85,7 +85,7 @@ describe("CommandPaletteComponent", () => {
 		const cancelled = createPalette(commands, { onCancel });
 		for (const character of "mod") cancelled.handleInput(character);
 		cancelled.handleInput("\x1b");
-		expect(onCancel).toHaveBeenCalledWith("/mod");
+		expect(onCancel).toHaveBeenCalledWith();
 	});
 
 	test("renders within narrow widths", () => {
@@ -132,6 +132,7 @@ describe("InteractiveMode slash-command aggregation", () => {
 			skillCommands,
 			getLoginProviderOptions: () => [],
 			prefixAutocompleteDescription: (description: string | undefined) => description,
+			getAppKeyDisplay: () => "ctrl+l",
 		};
 		const createSlashCommands = (
 			InteractiveMode as unknown as {
@@ -211,7 +212,7 @@ describe("command palette overlay", () => {
 			const after = terminal.getViewport();
 
 			expect(after.findIndex((line) => line.includes("FIXED COMPOSER"))).toBe(composerRow);
-			expect(after.some((line) => line.includes("Slash commands"))).toBe(true);
+			expect(after.some((line) => line.includes("Command Palette"))).toBe(true);
 		} finally {
 			tui.stop();
 		}

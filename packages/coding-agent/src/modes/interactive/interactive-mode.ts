@@ -2652,7 +2652,7 @@ export class InteractiveMode {
 		if (this.commandPaletteHandle || this.editor.getText().length > 0) return false;
 
 		const palette = new CommandPaletteComponent(this.createSlashCommands(), {
-			maxVisible: () => Math.max(1, Math.min(10, Math.floor(this.ui.terminal.rows * 0.7) - 6)),
+			maxVisible: () => Math.max(1, Math.min(12, Math.floor(this.ui.terminal.rows * 0.7) - 7)),
 			onSubmit: (command) => {
 				this.closeCommandPalette();
 				this.editor.setText("");
@@ -2663,9 +2663,8 @@ export class InteractiveMode {
 				this.editor.setText(text);
 				this.ui.requestRender();
 			},
-			onCancel: (draft) => {
+			onCancel: () => {
 				this.closeCommandPalette();
-				this.editor.setText(draft);
 				this.ui.requestRender();
 			},
 		});

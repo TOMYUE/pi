@@ -15,7 +15,7 @@ export interface CommandPaletteOptions {
 	maxVisible: () => number;
 	onSubmit: (command: SlashCommand) => void;
 	onComplete: (text: string) => void;
-	onCancel: (draft: string) => void;
+	onCancel: () => void;
 }
 
 /** Searchable slash-command palette shown independently from the composer. */
@@ -45,7 +45,7 @@ export class CommandPaletteComponent implements Component, Focusable {
 	handleInput(data: string): void {
 		const kb = getKeybindings();
 		if (kb.matches(data, "tui.select.cancel")) {
-			this.options.onCancel(this.getDraft());
+			this.options.onCancel();
 			return;
 		}
 		if (kb.matches(data, "tui.select.up")) {
@@ -95,19 +95,18 @@ export class CommandPaletteComponent implements Component, Focusable {
 	}
 
 	render(width: number): string[] {
-		if (width < 4) return [truncateToWidth("Commands", Math.max(1, width))];
+		if (width < 4) return [truncateToWidth("Command Palette", Math.max(1, width))];
 
 		const lines: string[] = [];
 		const innerWidth = width - 4;
-		const border = (text: string) => theme.fg("borderAccent", text);
-		lines.push(border(`┌${"─".repeat(width - 2)}┐`));
-		lines.push(this.renderBoxLine(theme.bold(theme.fg("accent", "Slash commands")), width));
+		const border = (text: string) => theme.fg("borderMuted", text);
+		const title = `─ ${theme.bold(theme.fg("accent", "Command Palette"))} `;
+		lines.push(`${border("╭")}${title}${border(`${"─".repeat(Math.max(0, width - visibleWidth(title) - 2))}╮`)}`);
+		lines.push(this.renderBoxLine("", width));
 
-		const searchLabel = theme.fg("muted", "Search: /");
-		const searchWidth = Math.max(1, innerWidth - visibleWidth(searchLabel));
-		const searchLine = this.searchInput.render(searchWidth)[0] ?? "";
-		lines.push(this.renderBoxLine(`${searchLabel}${searchLine}`, width));
-		lines.push(border(`├${"─".repeat(width - 2)}┤`));
+		const searchLine = this.searchInput.render(Math.max(1, innerWidth))[0] ?? "";
+		lines.push(this.renderBoxLine(searchLine, width));
+		lines.push(this.renderBoxLine("", width));
 
 		if (this.filteredCommands.length === 0) {
 			lines.push(this.renderBoxLine(theme.fg("muted", "No matching commands"), width));
@@ -133,21 +132,40 @@ export class CommandPaletteComponent implements Component, Focusable {
 			keyHint("tui.input.tab", "insert") +
 			"  " +
 			keyHint("tui.select.cancel", "close");
+		lines.push(this.renderBoxLine("", width));
 		lines.push(this.renderBoxLine(hint, width));
-		lines.push(border(`└${"─".repeat(width - 2)}┘`));
-		return lines;
-	}
-
-	private getDraft(): string {
-		return `/${this.searchInput.getValue().replace(/^\/+/, "")}`;
+		lines.push(border(`╰${"─".repeat(width - 2)}╯`));
+		return lines.map((line) => truncateToWidth(line, width, ""));
 	}
 
 	private renderCommand(command: SlashCommand, selected: boolean, width: number): string {
-		const prefix = selected ? "› " : "  ";
-		const name = theme.fg(selected ? "accent" : "text", `/${command.name}`);
-		const argumentHint = command.argumentHint ? theme.fg("muted", ` ${command.argumentHint}`) : "";
-		const description = command.description ? theme.fg("muted", `  ${command.description}`) : "";
-		return this.renderBoxLine(`${prefix}${name}${argumentHint}${description}`, width, selected);
+		if (width < 48) {
+			return this.renderBoxLine(theme.bold(theme.fg("text", command.name)), width, selected);
+		}
+
+		const categoryWidth = Math.min(
+			12,
+			Math.max(6, ...this.commands.map((item) => visibleWidth(item.category ?? ""))),
+		);
+		const commandWidth = Math.min(28, Math.max(12, ...this.commands.map((item) => visibleWidth(item.name))));
+		const shortcut = truncateToWidth(command.shortcut ?? "", 12, "");
+		const descriptionWidth = Math.max(0, width - 4 - categoryWidth - commandWidth - visibleWidth(shortcut) - 6);
+		const category = truncateToWidth(command.category ?? "", categoryWidth, "").padStart(categoryWidth);
+		const name = truncateToWidth(command.name, commandWidth - 2, "").padEnd(commandWidth);
+		const descriptionText = command.argumentHint
+			? command.description
+				? `${command.argumentHint} — ${command.description}`
+				: command.argumentHint
+			: (command.description ?? "");
+		const description = truncateToWidth(descriptionText.replace(/[\r\n]+/g, " "), descriptionWidth, "");
+		const descriptionPadding = " ".repeat(Math.max(0, descriptionWidth - visibleWidth(description)));
+		const categoryColor = selected ? "text" : "dim";
+		const descriptionColor = selected ? "accent" : "muted";
+		return this.renderBoxLine(
+			`${theme.fg(categoryColor, category)}  ${theme.bold(theme.fg("text", name))}${theme.fg(descriptionColor, description + descriptionPadding)}  ${theme.bold(theme.fg("accent", shortcut))}`,
+			width,
+			selected,
+		);
 	}
 
 	private renderBoxLine(content: string, width: number, selected = false): string {
@@ -155,7 +173,7 @@ export class CommandPaletteComponent implements Component, Focusable {
 		const truncated = truncateToWidth(content, innerWidth);
 		const padded = truncated + " ".repeat(Math.max(0, innerWidth - visibleWidth(truncated)));
 		const body = selected ? theme.bg("selectedBg", padded) : padded;
-		const side = theme.fg("borderAccent", "│");
+		const side = theme.fg("borderMuted", "│");
 		return `${side} ${body} ${side}`;
 	}
 }
