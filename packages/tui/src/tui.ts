@@ -266,6 +266,7 @@ type TranscriptRenderCache = {
 	width: number;
 	lines: string[];
 	imageBlocks: ViewportImageBlock[];
+	childLayouts: Array<{ component: Component; startRow: number; endRow: number }>;
 };
 
 /**
@@ -318,6 +319,22 @@ export class Container implements Component {
 				if (nested) {
 					return { startRow: layout.startRow + nested.startRow, endRow: layout.startRow + nested.endRow };
 				}
+			}
+		}
+		return undefined;
+	}
+
+	/** Return the deepest mouse handler at a cached local row. */
+	getMouseTargetAtRow(row: number): { component: Component; y: number } | undefined {
+		for (const layout of this.childLayouts) {
+			if (row < layout.startRow || row >= layout.endRow) continue;
+			const localRow = row - layout.startRow;
+			if (layout.component instanceof Container) {
+				const nested = layout.component.getMouseTargetAtRow(localRow);
+				if (nested) return nested;
+			}
+			if (layout.component.handleMouse) {
+				return { component: layout.component, y: localRow };
 			}
 		}
 		return undefined;
@@ -1059,7 +1076,35 @@ export class TUI extends Container {
 				}
 			}
 		}
-		if ((button & 64) === 0) return true;
+		if ((button & 64) === 0) {
+			if (x !== undefined && y !== undefined && y < this.transcriptViewportHeight) {
+				const transcriptRow = this.transcriptScrollTop + y;
+				const layout = this.transcriptRenderCache?.childLayouts.find(
+					(entry) => transcriptRow >= entry.startRow && transcriptRow < entry.endRow,
+				);
+				if (layout) {
+					const localRow = transcriptRow - layout.startRow;
+					const target =
+						layout.component instanceof Container
+							? layout.component.getMouseTargetAtRow(localRow)
+							: layout.component.handleMouse
+								? { component: layout.component, y: localRow }
+								: undefined;
+					if (target) {
+						const eventType = release ? "release" : (button & 32) !== 0 ? "drag" : "press";
+						target.component.handleMouse?.({
+							type: eventType,
+							button: button & 3,
+							x,
+							y: target.y,
+							wheelDirection: undefined,
+						});
+						this.requestRenderFor(target.component);
+					}
+				}
+			}
+			return true;
+		}
 		const wheelDirection = button & 3;
 		if (wheelDirection > 1) return true;
 
@@ -1582,11 +1627,14 @@ export class TUI extends Container {
 		let transcript = this.transcriptRenderCache;
 		if (this.transcriptDirty || transcript?.width !== width) {
 			const lines: string[] = [];
+			const childLayouts: TranscriptRenderCache["childLayouts"] = [];
 			for (const child of this.children) {
 				if (child === fixedBottom) continue;
-				lines.push(...child.render(width));
+				const childLines = child.render(width);
+				childLayouts.push({ component: child, startRow: lines.length, endRow: lines.length + childLines.length });
+				lines.push(...childLines);
 			}
-			transcript = { width, lines, imageBlocks: this.findViewportImageBlocks(lines) };
+			transcript = { width, lines, imageBlocks: this.findViewportImageBlocks(lines), childLayouts };
 			this.transcriptRenderCache = transcript;
 			this.transcriptDirty = false;
 		}

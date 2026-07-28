@@ -1461,6 +1461,46 @@ describe("TUI fixed-bottom fullscreen rendering", () => {
 		tui.stop();
 	});
 
+	it("routes transcript clicks through cached nested layouts after scrolling", async () => {
+		const terminal = new VirtualTerminal(30, 8);
+		const tui = new TUI(terminal);
+		const transcript = new Container();
+		const before = new TestComponent();
+		before.lines = Array.from({ length: 9 }, (_, index) => `Before ${index}`);
+		const nested = new Container();
+		const heading = new TestComponent();
+		heading.lines = ["Heading"];
+		const disclosure = new MouseComponent();
+		disclosure.lines = ["Disclosure", "Details"];
+		const after = new TestComponent();
+		after.lines = ["After 0", "After 1", "After 2"];
+		nested.addChild(heading);
+		nested.addChild(disclosure);
+		transcript.addChild(before);
+		transcript.addChild(nested);
+		transcript.addChild(after);
+		const composer = new MouseComponent();
+		composer.lines = ["Composer"];
+		tui.addChild(transcript);
+		tui.addChild(composer);
+		tui.setFixedBottom(composer);
+		tui.setFocus(composer);
+		tui.start();
+		await terminal.waitForRender();
+
+		// Scroll from logical row 8 to row 5, then click logical row 10.
+		terminal.sendInput("\x1b[<64;2;2M");
+		await terminal.waitForRender();
+		terminal.sendInput("\x1b[<0;4;6M");
+		await terminal.waitForRender();
+
+		assert.deepStrictEqual(disclosure.mouseEvents, [
+			{ type: "press", button: 0, x: 3, y: 0, wheelDirection: undefined },
+		]);
+		assert.deepStrictEqual(composer.mouseEvents, []);
+		tui.stop();
+	});
+
 	it("captures primary drag and release above and below the focused editor", async () => {
 		for (const releaseRow of [1, 8]) {
 			const terminal = new VirtualTerminal(30, 8);
