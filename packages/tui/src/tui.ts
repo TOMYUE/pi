@@ -1642,6 +1642,9 @@ export class TUI extends Container {
 		if (fullscreen && widthChanged) {
 			this.followTranscriptOutput = true;
 		}
+		if (fullscreen && heightChanged) {
+			this.markTranscriptDirty();
+		}
 		const previousBufferLength = this.previousHeight > 0 ? this.previousViewportTop + this.previousHeight : height;
 		let prevViewportTop = heightChanged ? Math.max(0, previousBufferLength - height) : this.previousViewportTop;
 		let viewportTop = prevViewportTop;

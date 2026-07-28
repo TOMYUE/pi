@@ -428,11 +428,11 @@ describe("SettingsManager", () => {
 			else process.env.PI_MOUSE_CAPTURE = originalMouseCapture;
 		});
 
-		it("defaults off and supports the environment override", () => {
+		it("defaults on and supports the environment override", () => {
 			delete process.env.PI_MOUSE_CAPTURE;
-			expect(SettingsManager.inMemory().getMouseCapture()).toBe(false);
-			process.env.PI_MOUSE_CAPTURE = "1";
 			expect(SettingsManager.inMemory().getMouseCapture()).toBe(true);
+			process.env.PI_MOUSE_CAPTURE = "0";
+			expect(SettingsManager.inMemory().getMouseCapture()).toBe(false);
 		});
 
 		it("gives persisted settings precedence and persists changes", async () => {

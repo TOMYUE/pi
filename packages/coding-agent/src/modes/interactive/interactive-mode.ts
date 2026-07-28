@@ -36,6 +36,7 @@ import {
 	Text,
 	TruncatedText,
 	TUI,
+	truncateToWidth,
 	visibleWidth,
 } from "@earendil-works/pi-tui";
 import chalk from "chalk";
@@ -167,6 +168,41 @@ interface Expandable {
 
 function isExpandable(obj: unknown): obj is Expandable {
 	return typeof obj === "object" && obj !== null && "setExpanded" in obj && typeof obj.setExpanded === "function";
+}
+
+export class WelcomeComponent implements Component {
+	private readonly getTerminalRows: () => number;
+
+	constructor(getTerminalRows: () => number) {
+		this.getTerminalRows = getTerminalRows;
+	}
+
+	render(width: number): string[] {
+		const center = (text: string): string => {
+			const fitted = truncateToWidth(text, width, "");
+			return " ".repeat(Math.max(0, Math.floor((width - visibleWidth(fitted)) / 2))) + fitted;
+		};
+		const keyWidth = visibleWidth("/hotkeys");
+		const hints = [
+			`${theme.bold("/".padStart(keyWidth))} ${theme.fg("dim", "for commands")}`,
+			`${theme.bold("/hotkeys")} ${theme.fg("dim", "for shortcuts")}`,
+		];
+		const hintWidth = Math.max(...hints.map(visibleWidth));
+		const renderedHints =
+			width >= hintWidth
+				? hints.map((hint) => " ".repeat(Math.floor((width - hintWidth) / 2)) + hint)
+				: hints.map((hint) => center(hint));
+		const terminalRows = this.getTerminalRows();
+		const title = center(theme.bold(`Welcome to ${APP_NAME === "pi" ? "Pi" : APP_NAME}`));
+		if (terminalRows <= 8) return [title];
+		if (terminalRows === 9) return [title, renderedHints[0]];
+		if (terminalRows === 10) return [title, ...renderedHints];
+		const topPadding = terminalRows < 16 ? 1 : Math.floor(terminalRows * 0.28);
+
+		return [...Array.from({ length: topPadding }, () => ""), title, "", ...renderedHints];
+	}
+
+	invalidate(): void {}
 }
 
 class ExpandableText extends Text implements Expandable {
@@ -709,7 +745,7 @@ export class InteractiveMode {
 		const [fdPath] = await Promise.all([ensureTool("fd"), ensureTool("rg")]);
 		this.fdPath = fdPath;
 
-		if (this.session.scopedModels.length > 0 && (this.options.verbose || !this.settingsManager.getQuietStartup())) {
+		if (this.session.scopedModels.length > 0 && this.options.verbose) {
 			const modelList = this.session.scopedModels
 				.map((sm) => {
 					const thinkingStr = sm.thinkingLevel ? `:${sm.thinkingLevel}` : "";
@@ -752,8 +788,8 @@ export class InteractiveMode {
 
 		await this.themeController.applyFromSettings();
 
-		// Add header with keybindings from config (unless silenced)
-		if (this.options.verbose || !this.settingsManager.getQuietStartup()) {
+		// Keep normal startup focused; detailed startup output remains available with --verbose.
+		if (this.options.verbose) {
 			const logo = theme.bold(theme.fg("accent", APP_NAME)) + theme.fg("dim", ` v${this.version}`);
 
 			// Build startup instructions using keybinding hint helpers
@@ -807,6 +843,9 @@ export class InteractiveMode {
 			this.headerContainer.addChild(new Spacer(1));
 			this.headerContainer.addChild(this.builtInHeader);
 			this.headerContainer.addChild(new Spacer(1));
+		} else if (!this.settingsManager.getQuietStartup()) {
+			this.builtInHeader = new WelcomeComponent(() => this.ui.terminal.rows);
+			this.headerContainer.addChild(this.builtInHeader);
 		} else {
 			// Minimal header when silenced
 			this.builtInHeader = new Text("", 0, 0);
@@ -1445,12 +1484,15 @@ export class InteractiveMode {
 	private showLoadedResources(options?: {
 		extensions?: Array<{ path: string; sourceInfo?: SourceInfo }>;
 		force?: boolean;
+		suppressListing?: boolean;
 		showDiagnosticsWhenQuiet?: boolean;
 	}): void {
 		// Resource rendering is idempotent; chat clears no longer clear this separate container.
 		this.loadedResourcesContainer.clear();
 
-		const showListing = options?.force || this.options.verbose || !this.settingsManager.getQuietStartup();
+		const showListing =
+			options?.suppressListing !== true &&
+			(options?.force || this.options.verbose || !this.settingsManager.getQuietStartup());
 		const showDiagnostics = showListing || options?.showDiagnosticsWhenQuiet === true;
 		if (!showListing && !showDiagnostics) {
 			return;
@@ -1726,7 +1768,11 @@ export class InteractiveMode {
 
 		const extensionRunner = this.session.extensionRunner;
 		this.setupExtensionShortcuts(extensionRunner);
-		this.showLoadedResources({ force: false, showDiagnosticsWhenQuiet: true });
+		this.showLoadedResources({
+			force: this.toolOutputExpanded,
+			suppressListing: !this.options.verbose && !this.toolOutputExpanded,
+			showDiagnosticsWhenQuiet: true,
+		});
 		this.showStartupNoticesIfNeeded();
 	}
 
@@ -3889,6 +3935,11 @@ export class InteractiveMode {
 
 	private setToolsExpanded(expanded: boolean): void {
 		this.toolOutputExpanded = expanded;
+		this.showLoadedResources({
+			force: expanded,
+			suppressListing: !this.options.verbose && !expanded,
+			showDiagnosticsWhenQuiet: true,
+		});
 		const activeHeader = this.customHeader ?? this.builtInHeader;
 		if (isExpandable(activeHeader)) {
 			activeHeader.setExpanded(expanded);
@@ -5474,7 +5525,8 @@ export class InteractiveMode {
 			const runner = this.session.extensionRunner;
 			this.setupExtensionShortcuts(runner);
 			this.showLoadedResources({
-				force: false,
+				force: this.toolOutputExpanded,
+				suppressListing: !this.options.verbose && !this.toolOutputExpanded,
 				showDiagnosticsWhenQuiet: true,
 			});
 			const savedImplicitProjectTrust = this.maybeSaveImplicitProjectTrustAfterReload();

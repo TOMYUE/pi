@@ -36,7 +36,7 @@ export interface TerminalSettings {
 	showImages?: boolean; // default: true (only relevant if terminal supports images)
 	imageWidthCells?: number; // default: 60 (preferred inline image width in terminal cells)
 	clearOnShrink?: boolean; // default: false (clear empty rows when content shrinks)
-	mouseCapture?: boolean; // default: false (capture mouse reports for fullscreen wheel scrolling)
+	mouseCapture?: boolean; // default: true (capture mouse reports for fullscreen scrolling and selection)
 	showTerminalProgress?: boolean; // default: false (OSC 9;4 terminal progress indicators)
 }
 
@@ -1112,7 +1112,10 @@ export class SettingsManager {
 		if (this.settings.terminal?.mouseCapture !== undefined) {
 			return this.settings.terminal.mouseCapture;
 		}
-		return process.env.PI_MOUSE_CAPTURE === "1";
+		if (process.env.PI_MOUSE_CAPTURE !== undefined) {
+			return process.env.PI_MOUSE_CAPTURE === "1";
+		}
+		return true;
 	}
 
 	setMouseCapture(enabled: boolean): void {

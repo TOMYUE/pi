@@ -7,7 +7,7 @@ import { VirtualTerminal } from "../../tui/test/virtual-terminal.ts";
 import type { AutocompleteProviderFactory } from "../src/core/extensions/types.ts";
 import type { SourceInfo } from "../src/core/source-info.ts";
 import type { AuthSelectorProvider } from "../src/modes/interactive/components/oauth-selector.ts";
-import { InteractiveMode } from "../src/modes/interactive/interactive-mode.ts";
+import { InteractiveMode, WelcomeComponent } from "../src/modes/interactive/interactive-mode.ts";
 import { initTheme } from "../src/modes/interactive/theme/theme.ts";
 
 function renderLastLine(container: Container, width = 120): string {
@@ -128,16 +128,40 @@ describe("InteractiveMode.setToolsExpanded", () => {
 			builtInHeader: header,
 			loadedResourcesContainer: { children: [loadedResourcesChild] },
 			chatContainer: { children: [chatChild] },
+			options: { verbose: false },
+			showLoadedResources: vi.fn(),
 			ui: { requestRender: vi.fn() },
 		};
 
 		(InteractiveMode as any).prototype.setToolsExpanded.call(fakeThis, true);
 
 		expect(fakeThis.toolOutputExpanded).toBe(true);
+		expect(fakeThis.showLoadedResources).toHaveBeenCalledWith({
+			force: true,
+			suppressListing: false,
+			showDiagnosticsWhenQuiet: true,
+		});
 		expect(header.setExpanded).toHaveBeenCalledWith(true);
 		expect(loadedResourcesChild.setExpanded).toHaveBeenCalledWith(true);
 		expect(chatChild.setExpanded).toHaveBeenCalledWith(true);
 		expect(fakeThis.ui.requestRender).toHaveBeenCalledTimes(1);
+	});
+});
+
+describe("WelcomeComponent", () => {
+	beforeAll(() => {
+		initTheme("dark");
+	});
+
+	test.each([
+		{ rows: 8, expectedLines: 1 },
+		{ rows: 9, expectedLines: 2 },
+		{ rows: 10, expectedLines: 3 },
+	])("keeps the welcome visible in a $rows-row terminal", ({ rows, expectedLines }) => {
+		const lines = new WelcomeComponent(() => rows).render(20);
+		expect(lines).toHaveLength(expectedLines);
+		expect(lines[0]).toContain("Welcome to Pi");
+		for (const line of lines) expect(line.replaceAll(/\x1b\[[0-9;]*m/g, "").length).toBeLessThanOrEqual(20);
 	});
 });
 
@@ -686,6 +710,42 @@ describe("InteractiveMode.showLoadedResources", () => {
 		expect(output).toContain("[Skills]");
 		expect(output).toContain("commit");
 		expect(output).not.toContain("resource-list");
+	});
+
+	test("suppresses the normal startup resource listing while preserving diagnostics", () => {
+		const fakeThis = createShowLoadedResourcesThis({
+			quietStartup: false,
+			skills: [{ filePath: "/tmp/skill/SKILL.md", name: "commit" }],
+			skillDiagnostics: [{ type: "warning", message: "Duplicate skill" }],
+		});
+
+		(InteractiveMode as any).prototype.showLoadedResources.call(fakeThis, {
+			force: false,
+			suppressListing: true,
+			showDiagnosticsWhenQuiet: true,
+		});
+
+		const output = renderAll(fakeThis.loadedResourcesContainer);
+		expect(output).not.toContain("[Skills]");
+		expect(output).not.toContain("commit");
+		expect(output).toContain("[Skill conflicts]");
+		expect(output).toContain("diagnostics");
+
+		(InteractiveMode as any).prototype.showLoadedResources.call(fakeThis, {
+			force: true,
+			suppressListing: false,
+			showDiagnosticsWhenQuiet: true,
+		});
+		expect(renderAll(fakeThis.loadedResourcesContainer)).toContain("[Skills]");
+
+		(InteractiveMode as any).prototype.showLoadedResources.call(fakeThis, {
+			force: false,
+			suppressListing: true,
+			showDiagnosticsWhenQuiet: true,
+		});
+		const collapsedOutput = renderAll(fakeThis.loadedResourcesContainer);
+		expect(collapsedOutput).not.toContain("[Skills]");
+		expect(collapsedOutput).toContain("[Skill conflicts]");
 	});
 
 	test("shows full resource listing when expanded", () => {

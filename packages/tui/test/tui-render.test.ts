@@ -1181,6 +1181,30 @@ describe("TUI fixed-bottom fullscreen rendering", () => {
 		});
 	});
 
+	it("rerenders height-aware transcript components after a fullscreen resize", async () => {
+		const terminal = new VirtualTerminal(30, 8);
+		const tui = new TUI(terminal);
+		const transcript: Component = {
+			render: () => [`Height ${terminal.rows}`],
+			invalidate: () => {},
+		};
+		const composer = new TestComponent();
+		composer.lines = ["Composer"];
+		tui.addChild(transcript);
+		tui.addChild(composer);
+		tui.setFixedBottom(composer);
+		tui.start();
+		await terminal.waitForRender();
+		assert.ok(terminal.getViewport().includes("Height 8"));
+
+		terminal.resize(30, 6);
+		await terminal.waitForRender();
+		assert.ok(terminal.getViewport().includes("Height 6"));
+		assert.ok(!terminal.getViewport().includes("Height 8"));
+
+		tui.stop();
+	});
+
 	it("keeps the focused composer line visible when the composer is taller than the terminal", async () => {
 		const terminal = new VirtualTerminal(30, 5);
 		const tui = new TUI(terminal);

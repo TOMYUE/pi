@@ -6,11 +6,13 @@
 
 - Changed the interactive TUI to keep the composer fixed at the bottom while the transcript streams and scrolls independently.
 - Changed slash-command selection to use a searchable pop-out command palette while preserving command arguments and autocomplete.
+- Changed normal interactive startup to show a centered welcome with command and shortcut discovery instead of listing every loaded resource.
 
 ### Fixed
 
 - Fixed model registry reloads unexpectedly fetching remote catalogs instead of only reloading local model configuration.
 - Fixed direct bash execution returning before truncated full-output files were completely written.
+- Fixed mouse-wheel transcript scrolling being unavailable by default in the fullscreen fixed-composer interface.
 
 ## [0.82.1] - 2026-07-25
 
