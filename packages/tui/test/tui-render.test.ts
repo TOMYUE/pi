@@ -13,7 +13,7 @@ import {
 	setCapabilities,
 	setCellDimensions,
 } from "../src/terminal-image.ts";
-import { type Component, Container, CURSOR_MARKER, TUI } from "../src/tui.ts";
+import { type Component, Container, CURSOR_MARKER, TUI, type TuiMouseEvent } from "../src/tui.ts";
 import { VirtualTerminal } from "./virtual-terminal.ts";
 
 class TestComponent implements Component {
@@ -26,6 +26,13 @@ class TestComponent implements Component {
 		this.inputs.push(data);
 	}
 	invalidate(): void {}
+}
+
+class MouseComponent extends TestComponent {
+	mouseEvents: TuiMouseEvent[] = [];
+	handleMouse(event: TuiMouseEvent): void {
+		this.mouseEvents.push(event);
+	}
 }
 
 class CountingContainer extends Container {
@@ -861,7 +868,7 @@ describe("TUI fixed-bottom fullscreen rendering", () => {
 		assert.strictEqual(terminal.stopCalls, 1);
 		assert.strictEqual(
 			terminal.writes.join(""),
-			"\x1b[?1049h\x1b[H\x1b[?1000h\x1b[?1006h\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?1049l",
+			"\x1b[?1049h\x1b[H\x1b[?1000h\x1b[?1002h\x1b[?1006h\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?1049l",
 		);
 
 		tui.stop();
@@ -1364,7 +1371,7 @@ describe("TUI fixed-bottom fullscreen rendering", () => {
 		tui.setFocus(composer);
 		tui.start();
 		await terminal.waitForRender();
-		assert.ok(terminal.getWrites().includes("\x1b[?1049h\x1b[H\x1b[?1000h\x1b[?1006h"));
+		assert.ok(terminal.getWrites().includes("\x1b[?1049h\x1b[H\x1b[?1000h\x1b[?1002h\x1b[?1006h"));
 		terminal.sendInput("\x1b[<0;10;3M");
 		assert.deepStrictEqual(composer.inputs, []);
 		const startEvents = terminal.getLifecycleEvents();
@@ -1391,6 +1398,125 @@ describe("TUI fixed-bottom fullscreen rendering", () => {
 		assert.deepStrictEqual(terminal.getViewport(), ["Transcript", "", "", "", "Composer"]);
 		tui.stop();
 		assert.strictEqual(terminal.getWrites().match(/\x1b\[\?1049l/g)?.length, 1);
+	});
+
+	it("routes SGR mouse reports to a focused nested composer descendant", async () => {
+		const terminal = new VirtualTerminal(30, 8);
+		const tui = new TUI(terminal);
+		const transcript = new TestComponent();
+		transcript.lines = Array.from({ length: 12 }, (_, index) => `Line ${index}`);
+		const composer = new Container();
+		const heading = new TestComponent();
+		heading.lines = ["Heading"];
+		const editor = new MouseComponent();
+		editor.lines = ["Editor 0", "Editor 1"];
+		composer.addChild(heading);
+		composer.addChild(editor);
+		tui.addChild(transcript);
+		tui.addChild(composer);
+		tui.setFixedBottom(composer);
+		tui.setFocus(editor);
+		tui.start();
+		await terminal.waitForRender();
+
+		terminal.sendInput("\x1b[<64;6;7M");
+		terminal.sendInput("\x1b[<0;6;7M");
+		terminal.sendInput("\x1b[<32;8;8M");
+		terminal.sendInput("\x1b[<0;8;8m");
+		await terminal.waitForRender();
+		assert.deepStrictEqual(editor.mouseEvents, [
+			{ type: "wheel", button: 0, x: 5, y: 0, wheelDirection: "up" },
+			{ type: "press", button: 0, x: 5, y: 0, wheelDirection: undefined },
+			{ type: "drag", button: 0, x: 7, y: 1, wheelDirection: undefined },
+			{ type: "release", button: 0, x: 7, y: 1, wheelDirection: undefined },
+		]);
+
+		terminal.sendInput("\x1b[<64;6;2M");
+		await terminal.waitForRender();
+		assert.strictEqual(terminal.getViewport()[0], "Line 4");
+		tui.stop();
+	});
+
+	it("captures primary drag and release above and below the focused editor", async () => {
+		for (const releaseRow of [1, 8]) {
+			const terminal = new VirtualTerminal(30, 8);
+			const tui = new TUI(terminal);
+			const transcript = new TestComponent();
+			transcript.lines = ["Transcript"];
+			const editor = new MouseComponent();
+			editor.lines = ["Editor"];
+			tui.addChild(transcript);
+			tui.addChild(editor);
+			tui.setFixedBottom(editor);
+			tui.setFocus(editor);
+			tui.start();
+			await terminal.waitForRender();
+
+			terminal.sendInput("\x1b[<0;5;8M");
+			terminal.sendInput(`\x1b[<32;6;${releaseRow}M`);
+			terminal.sendInput(`\x1b[<0;6;${releaseRow}m`);
+			assert.deepStrictEqual(editor.mouseEvents, [
+				{ type: "press", button: 0, x: 4, y: 0, wheelDirection: undefined },
+				{ type: "drag", button: 0, x: 5, y: releaseRow - 8, wheelDirection: undefined },
+				{ type: "release", button: 0, x: 5, y: releaseRow - 8, wheelDirection: undefined },
+			]);
+			tui.stop();
+		}
+	});
+
+	it("keeps primary capture when fixed-bottom geometry changes between press and release", async () => {
+		const terminal = new VirtualTerminal(30, 8);
+		const tui = new TUI(terminal);
+		const transcript = new TestComponent();
+		transcript.lines = ["Transcript"];
+		const composer = new Container();
+		const heading = new TestComponent();
+		heading.lines = ["Heading"];
+		const editor = new MouseComponent();
+		editor.lines = ["Editor 0", "Editor 1"];
+		const footer = new TestComponent();
+		footer.lines = ["Footer"];
+		composer.addChild(heading);
+		composer.addChild(editor);
+		composer.addChild(footer);
+		tui.addChild(transcript);
+		tui.addChild(composer);
+		tui.setFixedBottom(composer);
+		tui.setFocus(editor);
+		tui.start();
+		await terminal.waitForRender();
+
+		terminal.sendInput("\x1b[<0;5;6M");
+		await terminal.waitForRender();
+		footer.lines.push("Footer 2");
+		tui.requestRender();
+		await terminal.waitForRender();
+		terminal.sendInput("\x1b[<32;6;2M");
+		terminal.sendInput("\x1b[<0;6;2m");
+
+		assert.deepStrictEqual(editor.mouseEvents, [
+			{ type: "press", button: 0, x: 4, y: 0, wheelDirection: undefined },
+			{ type: "drag", button: 0, x: 5, y: -3, wheelDirection: undefined },
+			{ type: "release", button: 0, x: 5, y: -3, wheelDirection: undefined },
+		]);
+		tui.stop();
+	});
+
+	it("consumes SGR horizontal wheel reports without dispatching them", async () => {
+		const terminal = new VirtualTerminal(30, 5);
+		const tui = new TUI(terminal);
+		const editor = new MouseComponent();
+		editor.lines = ["Editor"];
+		tui.addChild(editor);
+		tui.setFixedBottom(editor);
+		tui.setFocus(editor);
+		tui.start();
+		await terminal.waitForRender();
+		terminal.sendInput("\x1b[<66;5;5M");
+		terminal.sendInput("\x1b[<67;5;5M");
+		assert.deepStrictEqual(editor.mouseEvents, []);
+		assert.deepStrictEqual(editor.inputs, []);
+		tui.stop();
 	});
 
 	it("does not enable or consume mouse reports when capture is off and still disables all modes", async () => {

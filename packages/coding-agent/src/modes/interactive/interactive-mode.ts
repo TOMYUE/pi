@@ -481,6 +481,13 @@ export class InteractiveMode {
 			paddingX: editorPaddingX,
 			autocompleteMaxVisible,
 		});
+		this.defaultEditor.onSelection = (text) => {
+			void copyToClipboard(text)
+				.then(() => this.showStatus("Copied selection"))
+				.catch((error: unknown) =>
+					this.showError(`Copy failed: ${error instanceof Error ? error.message : String(error)}`),
+				);
+		};
 		this.editor = this.defaultEditor;
 		this.editorContainer = new Container();
 		this.editorContainer.addChild(this.editor as Component);
@@ -2408,6 +2415,7 @@ export class InteractiveMode {
 			// Wire up callbacks from the default editor
 			newEditor.onSubmit = this.defaultEditor.onSubmit;
 			newEditor.onChange = this.defaultEditor.onChange;
+			newEditor.onSelection = this.defaultEditor.onSelection;
 
 			// Copy text from previous editor
 			newEditor.setText(currentText);

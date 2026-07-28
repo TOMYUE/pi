@@ -32,6 +32,9 @@ export interface EditorComponent extends Component {
 	/** Called when text changes */
 	onChange?: (text: string) => void;
 
+	/** Called when mouse-selected text is ready to copy */
+	onSelection?: (text: string) => void;
+
 	// =========================================================================
 	// History support (optional)
 	// =========================================================================

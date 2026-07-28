@@ -2,7 +2,7 @@ import type { AutocompleteProvider, AutocompleteSuggestions } from "../autocompl
 import { getKeybindings } from "../keybindings.ts";
 import { decodePrintableKey, matchesKey } from "../keys.ts";
 import { KillRing } from "../kill-ring.ts";
-import { type Component, CURSOR_MARKER, type Focusable, type TUI } from "../tui.ts";
+import { type Component, CURSOR_MARKER, type Focusable, type TUI, type TuiMouseEvent } from "../tui.ts";
 import { UndoStack } from "../undo-stack.ts";
 import {
 	cjkBreakRegex,
@@ -296,6 +296,13 @@ export class Editor implements Component, Focusable {
 
 	// Vertical scrolling support
 	private scrollOffset: number = 0;
+	private mouseScrolled = false;
+	private selectionAnchor: { start: number; end: number } | undefined;
+	private selectionHead: number | undefined;
+	private selectionDragging = false;
+	private renderedTextRows: Array<{ row: number; start: number; text: string }> = [];
+	private renderedContentStartCol = 0;
+	public onSelection?: (text: string) => void;
 
 	// Border color (can be changed dynamically)
 	public borderColor: (str: string) => string;
@@ -496,6 +503,10 @@ export class Editor implements Component, Focusable {
 
 	render(width: number): string[] {
 		if (this.isCommandPaletteOpen()) {
+			this.renderedTextRows = [];
+			this.selectionAnchor = undefined;
+			this.selectionHead = undefined;
+			this.selectionDragging = false;
 			return this.renderCommandPalette(width);
 		}
 
@@ -525,11 +536,13 @@ export class Editor implements Component, Focusable {
 		let cursorLineIndex = layoutLines.findIndex((line) => line.hasCursor);
 		if (cursorLineIndex === -1) cursorLineIndex = 0;
 
-		// Adjust scroll offset to keep cursor visible
-		if (cursorLineIndex < this.scrollOffset) {
-			this.scrollOffset = cursorLineIndex;
-		} else if (cursorLineIndex >= this.scrollOffset + maxVisibleLines) {
-			this.scrollOffset = cursorLineIndex - maxVisibleLines + 1;
+		// Keyboard activity restores normal cursor-follow after mouse scrolling.
+		if (!this.mouseScrolled) {
+			if (cursorLineIndex < this.scrollOffset) {
+				this.scrollOffset = cursorLineIndex;
+			} else if (cursorLineIndex >= this.scrollOffset + maxVisibleLines) {
+				this.scrollOffset = cursorLineIndex - maxVisibleLines + 1;
+			}
 		}
 
 		// Clamp scroll offset to valid range
@@ -545,7 +558,11 @@ export class Editor implements Component, Focusable {
 		const boxBorderColor = this.theme.boxBorderColor ?? this.theme.borderColor;
 
 		if (showBox) {
-			result.push(boxBorderColor(`╭${"─".repeat(width - 2)}╮`));
+			const topBorder =
+				this.scrollOffset > 0
+					? `╭${createScrollBorder("↑", this.scrollOffset, width - 2)}╮`
+					: `╭${"─".repeat(width - 2)}╮`;
+			result.push(boxBorderColor(topBorder));
 		} else {
 			// Render top border (with scroll indicator if scrolled down)
 			if (this.scrollOffset > 0) {
@@ -561,6 +578,16 @@ export class Editor implements Component, Focusable {
 		// hardware cursor for IME candidate-window placement even while
 		// autocomplete (e.g. slash-command menu) is visible.
 		const emitCursorMarker = this.focused;
+		const visualLines = this.buildVisualLineMap(layoutWidth);
+		const logicalOffsets: number[] = [];
+		let logicalOffset = 0;
+		for (const line of this.state.lines) {
+			logicalOffsets.push(logicalOffset);
+			logicalOffset += line.length + 1;
+		}
+		this.renderedTextRows = [];
+		this.renderedContentStartCol = (showBox ? 2 : 0) + paddingX;
+		const { start: selectionStart, end: selectionEnd } = this.getSelectionRange();
 
 		const linesBelow = layoutLines.length - (this.scrollOffset + visibleLines.length);
 		for (const [index, layoutLine] of visibleLines.entries()) {
@@ -568,8 +595,30 @@ export class Editor implements Component, Focusable {
 			let lineVisibleWidth = visibleWidth(layoutLine.text);
 			let cursorInPadding = false;
 
-			// Add cursor if this line has it
-			if (layoutLine.hasCursor && layoutLine.cursorPos !== undefined) {
+			const visualLine = visualLines[this.scrollOffset + index];
+			const textStart = visualLine ? (logicalOffsets[visualLine.logicalLine] ?? 0) + visualLine.startCol : 0;
+			this.renderedTextRows.push({ row: index + 1, start: textStart, text: layoutLine.text });
+			if (selectionEnd > selectionStart) {
+				const cursorPos = layoutLine.hasCursor ? layoutLine.cursorPos : undefined;
+				displayText = [...this.segment(layoutLine.text, "grapheme")]
+					.map((segment) => {
+						const start = textStart + segment.index;
+						const marker = emitCursorMarker && cursorPos === segment.index ? CURSOR_MARKER : "";
+						return (
+							marker +
+							(start >= selectionStart && start < selectionEnd
+								? `\x1b[7m${segment.segment}\x1b[0m`
+								: segment.segment)
+						);
+					})
+					.join("");
+				if (emitCursorMarker && cursorPos !== undefined && cursorPos >= layoutLine.text.length) {
+					displayText += CURSOR_MARKER;
+				}
+			}
+
+			// Add cursor if this line has it and mouse selection is inactive.
+			if (selectionEnd === selectionStart && layoutLine.hasCursor && layoutLine.cursorPos !== undefined) {
 				const before = displayText.slice(0, layoutLine.cursorPos);
 				const after = displayText.slice(layoutLine.cursorPos);
 
@@ -602,14 +651,8 @@ export class Editor implements Component, Focusable {
 			const lineRightPadding = cursorInPadding ? rightPadding.slice(1) : rightPadding;
 
 			if (showBox) {
-				const leftBorder =
-					index === 0 && this.scrollOffset > 0
-						? this.borderColor("↑")
-						: index === visibleLines.length - 1 && linesBelow > 0
-							? this.borderColor("↓")
-							: boxBorderColor("│");
 				result.push(
-					`${leftBorder}${leftPadding} ${displayText}${padding} ${lineRightPadding}${boxBorderColor("│")}`,
+					`${boxBorderColor("│")}${leftPadding} ${displayText}${padding} ${lineRightPadding}${boxBorderColor("│")}`,
 				);
 			} else {
 				result.push(`${leftPadding}${displayText}${padding}${lineRightPadding}`);
@@ -622,7 +665,9 @@ export class Editor implements Component, Focusable {
 			for (let index = visibleLines.length; index < minimumBodyLines; index++) {
 				result.push(emptyBodyLine);
 			}
-			result.push(boxBorderColor(`╰${"─".repeat(width - 2)}╯`));
+			const bottomBorder =
+				linesBelow > 0 ? `╰${createScrollBorder("↓", linesBelow, width - 2)}╯` : `╰${"─".repeat(width - 2)}╯`;
+			result.push(boxBorderColor(bottomBorder));
 		} else {
 			// Render bottom border (with scroll indicator if more content below)
 			if (linesBelow > 0) {
@@ -701,6 +746,10 @@ export class Editor implements Component, Focusable {
 	}
 
 	handleInput(data: string): void {
+		this.mouseScrolled = false;
+		this.selectionAnchor = undefined;
+		this.selectionHead = undefined;
+		this.selectionDragging = false;
 		const kb = getKeybindings();
 
 		// Handle character jump mode (awaiting next character to jump to)
@@ -1008,6 +1057,74 @@ export class Editor implements Component, Focusable {
 		if (data.charCodeAt(0) >= 32) {
 			this.insertCharacter(data);
 		}
+	}
+
+	handleMouse(event: TuiMouseEvent): void {
+		if (event.type === "wheel") {
+			const maxVisibleLines = Math.max(5, Math.floor(this.tui.terminal.rows * 0.3));
+			const maxScrollOffset = Math.max(0, this.buildVisualLineMap(this.lastWidth).length - maxVisibleLines);
+			this.scrollOffset = Math.max(
+				0,
+				Math.min(maxScrollOffset, this.scrollOffset + (event.wheelDirection === "up" ? -3 : 3)),
+			);
+			this.mouseScrolled = true;
+			return;
+		}
+		if (this.isCommandPaletteOpen()) return;
+		if (event.button !== 0) return;
+		const position = this.mouseTextPosition(event.x, event.y);
+		if (event.type === "press") {
+			this.selectionAnchor = position;
+			this.selectionHead = position?.start;
+			this.selectionDragging = position !== undefined;
+			return;
+		}
+		if (!this.selectionDragging) return;
+		if (position && this.selectionAnchor) {
+			this.selectionHead =
+				position.start === this.selectionAnchor.start && position.end === this.selectionAnchor.end
+					? this.selectionAnchor.start
+					: position.start >= this.selectionAnchor.start
+						? position.end
+						: position.start;
+		}
+		if (event.type === "release") {
+			this.selectionDragging = false;
+			const { start, end } = this.getSelectionRange();
+			if (end > start) this.onSelection?.(this.getText().slice(start, end));
+		}
+	}
+
+	private getSelectionRange(): { start: number; end: number } {
+		if (
+			!this.selectionAnchor ||
+			this.selectionHead === undefined ||
+			this.selectionHead === this.selectionAnchor.start
+		) {
+			return { start: 0, end: 0 };
+		}
+		return this.selectionHead > this.selectionAnchor.start
+			? { start: this.selectionAnchor.start, end: this.selectionHead }
+			: { start: this.selectionHead, end: this.selectionAnchor.end };
+	}
+
+	private mouseTextPosition(x: number, y: number): { start: number; end: number } | undefined {
+		const row = this.renderedTextRows.find((entry) => entry.row === y);
+		if (!row || x < this.renderedContentStartCol) return undefined;
+		const column = x - this.renderedContentStartCol;
+		let visualColumn = 0;
+		for (const segment of this.segment(row.text, "grapheme")) {
+			const width = visibleWidth(segment.segment);
+			if (column < visualColumn + width) {
+				return { start: row.start + segment.index, end: row.start + segment.index + segment.segment.length };
+			}
+			visualColumn += width;
+		}
+		if (column === visualColumn) {
+			const end = row.start + row.text.length;
+			return { start: end, end };
+		}
+		return undefined;
 	}
 
 	private layoutText(contentWidth: number): LayoutLine[] {

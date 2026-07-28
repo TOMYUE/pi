@@ -75,6 +75,9 @@ export interface Component {
 	 */
 	handleInput?(data: string): void;
 
+	/** Handle a mouse report routed to this component (coordinates are component-local). */
+	handleMouse?(event: TuiMouseEvent): void;
+
 	/**
 	 * If true, component receives key release events (Kitty protocol).
 	 * Default is false - release events are filtered out.
@@ -87,6 +90,14 @@ export interface Component {
 	 */
 	invalidate(): void;
 }
+
+export type TuiMouseEvent = {
+	type: "press" | "release" | "drag" | "wheel";
+	button: number;
+	x: number;
+	y: number;
+	wheelDirection?: "up" | "down";
+};
 
 type InputListenerResult = { consume?: boolean; data?: string } | undefined;
 type InputListener = (data: string) => InputListenerResult;
@@ -262,6 +273,7 @@ type TranscriptRenderCache = {
  */
 export class Container implements Component {
 	children: Component[] = [];
+	private childLayouts: Array<{ component: Component; startRow: number; endRow: number }> = [];
 
 	addChild(component: Component): void {
 		this.children.push(component);
@@ -286,13 +298,29 @@ export class Container implements Component {
 
 	render(width: number): string[] {
 		const lines: string[] = [];
+		this.childLayouts = [];
 		for (const child of this.children) {
 			const childLines = child.render(width);
+			this.childLayouts.push({ component: child, startRow: lines.length, endRow: lines.length + childLines.length });
 			for (const line of childLines) {
 				lines.push(line);
 			}
 		}
 		return lines;
+	}
+
+	/** Return a descendant's cached row range from the most recent render. */
+	getDescendantRowRange(target: Component): { startRow: number; endRow: number } | undefined {
+		for (const layout of this.childLayouts) {
+			if (layout.component === target) return { startRow: layout.startRow, endRow: layout.endRow };
+			if (layout.component instanceof Container) {
+				const nested = layout.component.getDescendantRowRange(target);
+				if (nested) {
+					return { startRow: layout.startRow + nested.startRow, endRow: layout.startRow + nested.endRow };
+				}
+			}
+		}
+		return undefined;
 	}
 }
 
@@ -315,6 +343,9 @@ export class TUI extends Container {
 	private transcriptRenderCache: TranscriptRenderCache | undefined;
 	private transcriptDirty = true;
 	private fullscreenActive = false;
+	private fixedBottomScreenStart = 0;
+	private fixedBottomVisibleStart = 0;
+	private primaryMouseCapture: Component | undefined;
 
 	/** Global callback for debug key (Shift+Ctrl+D). Called before input is forwarded to focused component. */
 	public onDebug?: () => void;
@@ -427,6 +458,7 @@ export class TUI extends Container {
 	}
 
 	setFocus(component: Component | null): void {
+		if (component !== this.focusedComponent) this.primaryMouseCapture = undefined;
 		this.setFocusInternal({ component, overlayFocusRestore: "clear" });
 	}
 
@@ -438,6 +470,7 @@ export class TUI extends Container {
 		overlayFocusRestore: OverlayFocusRestorePolicy;
 	}): void {
 		const previousFocus = this.focusedComponent;
+		if (component !== previousFocus) this.primaryMouseCapture = undefined;
 		let nextFocus = component;
 		const previousFocusedOverlay = previousFocus
 			? this.overlayStack.find((entry) => entry.component === previousFocus && this.isOverlayVisible(entry))
@@ -710,7 +743,7 @@ export class TUI extends Container {
 			this.hardwareCursorRow = 0;
 			this.maxLinesRendered = 0;
 			this.previousViewportTop = 0;
-			this.terminal.write(`\x1b[?1049h\x1b[H${this.mouseCapture ? "\x1b[?1000h\x1b[?1006h" : ""}`);
+			this.terminal.write(`\x1b[?1049h\x1b[H${this.mouseCapture ? "\x1b[?1000h\x1b[?1002h\x1b[?1006h" : ""}`);
 			this.fullscreenActive = true;
 		}
 		try {
@@ -965,9 +998,15 @@ export class TUI extends Container {
 		if (!this.fixedBottomComponent || !this.mouseCapture) return false;
 
 		let button: number | undefined;
-		const sgrMatch = data.match(/^\x1b\[<(\d+);\d+;\d+[Mm]$/);
+		let x: number | undefined;
+		let y: number | undefined;
+		let release = false;
+		const sgrMatch = data.match(/^\x1b\[<(\d+);(\d+);(\d+)([Mm])$/);
 		if (sgrMatch) {
 			button = Number.parseInt(sgrMatch[1], 10);
+			x = Number.parseInt(sgrMatch[2], 10) - 1;
+			y = Number.parseInt(sgrMatch[3], 10) - 1;
+			release = sgrMatch[4] === "m";
 		} else if (data.startsWith("\x1b[M") && data.length === 6) {
 			button = data.charCodeAt(3) - 32;
 		} else {
@@ -976,7 +1015,51 @@ export class TUI extends Container {
 
 		// Consume every mouse event so its escape bytes never reach the editor.
 		// Wheel events do not scroll the transcript behind a modal overlay.
-		if ((button & 64) === 0 || this.hasOverlay()) return true;
+		if (this.hasOverlay()) {
+			this.primaryMouseCapture = undefined;
+			return true;
+		}
+		const isWheel = (button & 64) !== 0;
+		if (isWheel && (button & 3) > 1) return true;
+		if (x !== undefined && y !== undefined && this.focusedComponent?.handleMouse) {
+			const fixedRange =
+				this.fixedBottomComponent === this.focusedComponent
+					? { startRow: 0, endRow: Number.POSITIVE_INFINITY }
+					: this.fixedBottomComponent instanceof Container
+						? this.fixedBottomComponent.getDescendantRowRange(this.focusedComponent)
+						: undefined;
+			if (fixedRange) {
+				const screenStart = this.fixedBottomScreenStart + fixedRange.startRow - this.fixedBottomVisibleStart;
+				const screenEnd = this.fixedBottomScreenStart + fixedRange.endRow - this.fixedBottomVisibleStart;
+				const captureValid = this.primaryMouseCapture === this.focusedComponent;
+				const primaryEvent = !isWheel && (button & 3) === 0;
+				if ((captureValid && primaryEvent) || (y >= screenStart && y < screenEnd)) {
+					const wheelDirection = isWheel ? ((button & 1) === 0 ? "up" : "down") : undefined;
+					const eventType = wheelDirection
+						? "wheel"
+						: release
+							? "release"
+							: (button & 32) !== 0
+								? "drag"
+								: "press";
+					this.focusedComponent.handleMouse({
+						type: eventType,
+						button: button & 3,
+						x,
+						y: y - screenStart,
+						wheelDirection,
+					});
+					if (primaryEvent && eventType === "press") {
+						this.primaryMouseCapture = this.focusedComponent;
+					} else if (primaryEvent && eventType === "release") {
+						this.primaryMouseCapture = undefined;
+					}
+					this.requestRenderFor(this.focusedComponent);
+					return true;
+				}
+			}
+		}
+		if ((button & 64) === 0) return true;
 		const wheelDirection = button & 3;
 		if (wheelDirection > 1) return true;
 
@@ -1519,6 +1602,8 @@ export class TUI extends Container {
 		const visibleFixedLines = this.sliceViewportLines(fixedLines, fixedStart, visibleFixedHeight);
 
 		const transcriptHeight = Math.max(0, height - visibleFixedLines.length);
+		this.fixedBottomScreenStart = transcriptHeight;
+		this.fixedBottomVisibleStart = fixedStart;
 		const maxScrollTop = Math.max(0, transcriptLines.length - transcriptHeight);
 		if (this.transcriptScrollTop > maxScrollTop) {
 			this.transcriptScrollTop = maxScrollTop;

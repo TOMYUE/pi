@@ -3,7 +3,7 @@ import { describe, it } from "node:test";
 import { stripVTControlCharacters } from "node:util";
 import { type AutocompleteProvider, CombinedAutocompleteProvider } from "../src/autocomplete.ts";
 import { Editor, wordWrapLine } from "../src/components/editor.ts";
-import { TUI } from "../src/tui.ts";
+import { CURSOR_MARKER, TUI } from "../src/tui.ts";
 import { visibleWidth } from "../src/utils.ts";
 import { defaultEditorTheme } from "./test-themes.ts";
 import { VirtualTerminal } from "./virtual-terminal.ts";
@@ -700,6 +700,66 @@ describe("Editor component", () => {
 	});
 
 	describe("Scroll indicators", () => {
+		it("mouse-scrolls a long draft independently until keyboard activity resumes cursor follow", () => {
+			const width = 20;
+			const editor = new Editor(createTestTUI(width, 20), defaultEditorTheme, { borderStyle: "box" });
+			editor.setText(Array.from({ length: 12 }, (_, index) => `line ${index}`).join("\n"));
+			const cursor = editor.getCursor();
+			editor.render(width);
+
+			editor.handleMouse({ type: "wheel", button: 0, x: 5, y: 2, wheelDirection: "up" });
+			const scrolled = editor.render(width);
+			assert.deepStrictEqual(editor.getCursor(), cursor);
+			assert.match(stripVTControlCharacters(scrolled[0]!), /^╭─── ↑ 3 more/);
+			assert.ok(stripVTControlCharacters(scrolled[1]!).startsWith("│ line 3"));
+			assert.ok(scrolled.some((line) => stripVTControlCharacters(line).startsWith("╰─── ↓")));
+			for (const line of scrolled) assert.strictEqual(visibleWidth(line), width);
+
+			editor.handleInput("\x1b[D");
+			const followed = editor.render(width);
+			assert.ok(followed.some((line) => stripVTControlCharacters(line).includes("line 11")));
+		});
+
+		it("selects exact wrapped Unicode text across a wrap-space boundary and highlights it", () => {
+			const editor = new Editor(createTestTUI(12), defaultEditorTheme, { borderStyle: "box" });
+			editor.setText("ab✅ cd efgh");
+			editor.focused = true;
+			let selected = "";
+			editor.onSelection = (text) => {
+				selected = text;
+			};
+			editor.render(12);
+			editor.handleMouse({ type: "press", button: 0, x: 2, y: 1 });
+			editor.handleMouse({ type: "drag", button: 0, x: 6, y: 2 });
+			const selectedRender = editor.render(12).join("\n");
+			assert.ok(selectedRender.includes("\x1b[7m✅\x1b[0m"));
+			assert.ok(selectedRender.includes(CURSOR_MARKER));
+			editor.handleMouse({ type: "release", button: 0, x: 6, y: 2 });
+			assert.strictEqual(selected, "ab✅ cd ef");
+			assert.strictEqual(editor.getText(), "ab✅ cd efgh");
+		});
+
+		it("selects whole Unicode graphemes forward and backward, but does not copy a click", () => {
+			const editor = new Editor(createTestTUI(20), defaultEditorTheme, { borderStyle: "box" });
+			editor.setText("a✅éz");
+			const selections: string[] = [];
+			editor.onSelection = (text) => selections.push(text);
+			editor.render(20);
+
+			editor.handleMouse({ type: "press", button: 0, x: 3, y: 1 });
+			editor.handleMouse({ type: "release", button: 0, x: 3, y: 1 });
+			assert.deepStrictEqual(selections, []);
+
+			editor.handleMouse({ type: "press", button: 0, x: 2, y: 1 });
+			editor.handleMouse({ type: "drag", button: 0, x: 5, y: 1 });
+			editor.handleMouse({ type: "release", button: 0, x: 5, y: 1 });
+			editor.handleMouse({ type: "press", button: 0, x: 6, y: 1 });
+			editor.handleMouse({ type: "drag", button: 0, x: 3, y: 1 });
+			editor.handleMouse({ type: "release", button: 0, x: 3, y: 1 });
+
+			assert.deepStrictEqual(selections, ["a✅é", "✅éz"]);
+		});
+
 		it("renders a rounded input box with a minimum body height", () => {
 			const width = 20;
 			const borderColor = (text: string) => `\x1b[35m${text}\x1b[39m`;
