@@ -163,6 +163,21 @@ describe("WelcomeComponent", () => {
 		expect(lines[0]).toContain("Welcome to Pi");
 		for (const line of lines) expect(line.replaceAll(/\x1b\[[0-9;]*m/g, "").length).toBeLessThanOrEqual(20);
 	});
+
+	test("centers the large Pi logo and welcome block in a normal terminal", () => {
+		const lines = new WelcomeComponent(() => 35).render(80);
+		const visibleLines = lines.map((line) => line.replaceAll(/\x1b\[[0-9;]*m/g, ""));
+		expect(visibleLines).toHaveLength(23);
+		expect(visibleLines.slice(12, 18).map((line) => line.trim())).toEqual([
+			"██████╗   ██╗",
+			"██╔══██╗  ╚═╝",
+			"██████╔╝  ██╗",
+			"██╔═══╝   ██║",
+			"██║       ██║",
+			"╚═╝       ╚═╝",
+		]);
+		expect(visibleLines[19]?.trim()).toBe("Welcome to Pi");
+	});
 });
 
 describe("InteractiveMode.createExtensionUIContext setTheme", () => {
