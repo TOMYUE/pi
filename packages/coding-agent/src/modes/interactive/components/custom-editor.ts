@@ -18,7 +18,7 @@ export class CustomEditor extends Editor {
 	public onExtensionShortcut?: (data: string) => boolean;
 
 	constructor(tui: TUI, theme: EditorTheme, keybindings: KeybindingsManager, options?: EditorOptions) {
-		super(tui, theme, { ...options, borderStyle: "accent" });
+		super(tui, theme, { ...options, borderStyle: "box" });
 		this.keybindings = keybindings;
 	}
 

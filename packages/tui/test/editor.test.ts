@@ -700,21 +700,23 @@ describe("Editor component", () => {
 	});
 
 	describe("Scroll indicators", () => {
-		it("renders an accent rail instead of horizontal borders", () => {
+		it("renders a rounded input box with a minimum body height", () => {
 			const width = 20;
 			const borderColor = (text: string) => `\x1b[35m${text}\x1b[39m`;
 			const editor = new Editor(
 				createTestTUI(width),
 				{ ...defaultEditorTheme, borderColor },
-				{ borderStyle: "accent" },
+				{ borderStyle: "box" },
 			);
 			editor.setText("first\nsecond");
 
 			const lines = editor.render(width);
-			assert.strictEqual(lines.length, 2);
+			assert.strictEqual(lines.length, 5);
+			assert.strictEqual(lines[0], borderColor(`╭${"─".repeat(width - 2)}╮`));
+			assert.strictEqual(lines.at(-1), borderColor(`╰${"─".repeat(width - 2)}╯`));
+			assert.match(stripVTControlCharacters(lines[1]!), /^│ first/);
+			assert.match(stripVTControlCharacters(lines[2]!), /^│ second/);
 			for (const line of lines) {
-				assert.ok(line.startsWith(`${borderColor("┃")} `));
-				assert.ok(!stripVTControlCharacters(line).includes("─"));
 				assert.strictEqual(visibleWidth(line), width);
 			}
 		});

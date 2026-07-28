@@ -228,6 +228,7 @@ interface LayoutLine {
 
 export interface EditorTheme {
 	borderColor: (str: string) => string;
+	boxBorderColor?: (str: string) => string;
 	selectList: SelectListTheme;
 	commandPalette?: {
 		border: (text: string) => string;
@@ -240,7 +241,7 @@ export interface EditorTheme {
 export interface EditorOptions {
 	paddingX?: number;
 	autocompleteMaxVisible?: number;
-	borderStyle?: "horizontal" | "accent";
+	borderStyle?: "horizontal" | "box";
 }
 
 const SLASH_COMMAND_SELECT_LIST_LAYOUT: SelectListLayoutOptions = {
@@ -316,7 +317,7 @@ export class Editor implements Component, Focusable {
 	private autocompleteRequestTask: Promise<void> = Promise.resolve();
 	private autocompleteStartToken: number = 0;
 	private autocompleteRequestId: number = 0;
-	private borderStyle: "horizontal" | "accent";
+	private borderStyle: "horizontal" | "box";
 
 	// Paste tracking for large pastes
 	private pastes: Map<number, string> = new Map();
@@ -500,9 +501,9 @@ export class Editor implements Component, Focusable {
 
 		const maxPadding = Math.max(0, Math.floor((width - 1) / 2));
 		const paddingX = Math.min(this.paddingX, maxPadding);
-		const showAccent = this.borderStyle === "accent" && width >= 3;
-		const accentWidth = showAccent ? 2 : 0;
-		const contentWidth = Math.max(1, width - paddingX * 2 - accentWidth);
+		const showBox = this.borderStyle === "box" && width >= 5;
+		const frameWidth = showBox ? 4 : 0;
+		const contentWidth = Math.max(1, width - paddingX * 2 - frameWidth);
 
 		// Layout width: with padding the cursor can overflow into it,
 		// without padding we reserve 1 column for the cursor.
@@ -541,8 +542,11 @@ export class Editor implements Component, Focusable {
 		const result: string[] = [];
 		const leftPadding = " ".repeat(paddingX);
 		const rightPadding = leftPadding;
+		const boxBorderColor = this.theme.boxBorderColor ?? this.theme.borderColor;
 
-		if (!showAccent) {
+		if (showBox) {
+			result.push(boxBorderColor(`╭${"─".repeat(width - 2)}╮`));
+		} else {
 			// Render top border (with scroll indicator if scrolled down)
 			if (this.scrollOffset > 0) {
 				const border = createScrollBorder("↑", this.scrollOffset, width);
@@ -597,20 +601,29 @@ export class Editor implements Component, Focusable {
 			const padding = " ".repeat(Math.max(0, contentWidth - lineVisibleWidth));
 			const lineRightPadding = cursorInPadding ? rightPadding.slice(1) : rightPadding;
 
-			if (showAccent) {
-				const indicator =
+			if (showBox) {
+				const leftBorder =
 					index === 0 && this.scrollOffset > 0
-						? "↑"
+						? this.borderColor("↑")
 						: index === visibleLines.length - 1 && linesBelow > 0
-							? "↓"
-							: "┃";
-				result.push(`${leftPadding}${this.borderColor(indicator)} ${displayText}${padding}${lineRightPadding}`);
+							? this.borderColor("↓")
+							: boxBorderColor("│");
+				result.push(
+					`${leftBorder}${leftPadding} ${displayText}${padding} ${lineRightPadding}${boxBorderColor("│")}`,
+				);
 			} else {
 				result.push(`${leftPadding}${displayText}${padding}${lineRightPadding}`);
 			}
 		}
 
-		if (!showAccent) {
+		if (showBox) {
+			const minimumBodyLines = terminalRows >= 12 ? 3 : 1;
+			const emptyBodyLine = `${boxBorderColor("│")}${leftPadding} ${" ".repeat(contentWidth)} ${rightPadding}${boxBorderColor("│")}`;
+			for (let index = visibleLines.length; index < minimumBodyLines; index++) {
+				result.push(emptyBodyLine);
+			}
+			result.push(boxBorderColor(`╰${"─".repeat(width - 2)}╯`));
+		} else {
 			// Render bottom border (with scroll indicator if more content below)
 			if (linesBelow > 0) {
 				const border = createScrollBorder("↓", linesBelow, width);
@@ -626,7 +639,7 @@ export class Editor implements Component, Focusable {
 			for (const line of autocompleteResult) {
 				const lineWidth = visibleWidth(line);
 				const linePadding = " ".repeat(Math.max(0, contentWidth - lineWidth));
-				const autocompleteIndent = showAccent ? "  " : "";
+				const autocompleteIndent = showBox ? "  " : "";
 				result.push(`${leftPadding}${autocompleteIndent}${line}${linePadding}${rightPadding}`);
 			}
 		}
