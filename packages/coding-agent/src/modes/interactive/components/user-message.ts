@@ -19,7 +19,7 @@ class UserMessageContent implements Component {
 			0,
 			0,
 			userMarkdownTheme,
-			{ italic: true },
+			{ color: (content) => theme.fg("success", content), italic: true },
 			{ preserveOrderedListMarkers: true, preserveBackslashEscapes: true },
 		);
 		this.outputPad = outputPad;

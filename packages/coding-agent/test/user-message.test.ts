@@ -1,6 +1,6 @@
 import { describe, expect, test } from "vitest";
 import { UserMessageComponent } from "../src/modes/interactive/components/user-message.ts";
-import { initTheme } from "../src/modes/interactive/theme/theme.ts";
+import { initTheme, theme } from "../src/modes/interactive/theme/theme.ts";
 import { stripAnsi } from "../src/utils/ansi.ts";
 
 const OSC133_ZONE_START = "\x1b]133;A\x07";
@@ -17,6 +17,7 @@ describe("UserMessageComponent", () => {
 		expect(lines).toHaveLength(2);
 		expect(lines[0]).toContain(OSC133_ZONE_START);
 		expect(lines[0]).toContain("\x1b[3m");
+		expect(lines[0]).toContain(theme.fg("success", "hello"));
 		expect(stripAnsi(lines[0])).toContain(" │ hello");
 		expect(lines[0]).not.toContain(OSC133_ZONE_END);
 		expect(lines[1].startsWith(OSC133_ZONE_END + OSC133_ZONE_FINAL)).toBe(true);
