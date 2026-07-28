@@ -240,6 +240,7 @@ export interface EditorTheme {
 export interface EditorOptions {
 	paddingX?: number;
 	autocompleteMaxVisible?: number;
+	borderStyle?: "horizontal" | "accent";
 }
 
 const SLASH_COMMAND_SELECT_LIST_LAYOUT: SelectListLayoutOptions = {
@@ -315,6 +316,7 @@ export class Editor implements Component, Focusable {
 	private autocompleteRequestTask: Promise<void> = Promise.resolve();
 	private autocompleteStartToken: number = 0;
 	private autocompleteRequestId: number = 0;
+	private borderStyle: "horizontal" | "accent";
 
 	// Paste tracking for large pastes
 	private pastes: Map<number, string> = new Map();
@@ -361,6 +363,7 @@ export class Editor implements Component, Focusable {
 		this.paddingX = Number.isFinite(paddingX) ? Math.max(0, Math.floor(paddingX)) : 0;
 		const maxVisible = options.autocompleteMaxVisible ?? 5;
 		this.autocompleteMaxVisible = Number.isFinite(maxVisible) ? Math.max(3, Math.min(20, Math.floor(maxVisible))) : 5;
+		this.borderStyle = options.borderStyle ?? "horizontal";
 	}
 
 	/** Set of currently valid paste IDs, for marker-aware segmentation. */
@@ -497,7 +500,9 @@ export class Editor implements Component, Focusable {
 
 		const maxPadding = Math.max(0, Math.floor((width - 1) / 2));
 		const paddingX = Math.min(this.paddingX, maxPadding);
-		const contentWidth = Math.max(1, width - paddingX * 2);
+		const showAccent = this.borderStyle === "accent" && width >= 3;
+		const accentWidth = showAccent ? 2 : 0;
+		const contentWidth = Math.max(1, width - paddingX * 2 - accentWidth);
 
 		// Layout width: with padding the cursor can overflow into it,
 		// without padding we reserve 1 column for the cursor.
@@ -537,12 +542,14 @@ export class Editor implements Component, Focusable {
 		const leftPadding = " ".repeat(paddingX);
 		const rightPadding = leftPadding;
 
-		// Render top border (with scroll indicator if scrolled down)
-		if (this.scrollOffset > 0) {
-			const border = createScrollBorder("↑", this.scrollOffset, width);
-			result.push(this.borderColor(border));
-		} else {
-			result.push(horizontal.repeat(width));
+		if (!showAccent) {
+			// Render top border (with scroll indicator if scrolled down)
+			if (this.scrollOffset > 0) {
+				const border = createScrollBorder("↑", this.scrollOffset, width);
+				result.push(this.borderColor(border));
+			} else {
+				result.push(horizontal.repeat(width));
+			}
 		}
 
 		// Render each visible layout line
@@ -551,7 +558,8 @@ export class Editor implements Component, Focusable {
 		// autocomplete (e.g. slash-command menu) is visible.
 		const emitCursorMarker = this.focused;
 
-		for (const layoutLine of visibleLines) {
+		const linesBelow = layoutLines.length - (this.scrollOffset + visibleLines.length);
+		for (const [index, layoutLine] of visibleLines.entries()) {
 			let displayText = layoutLine.text;
 			let lineVisibleWidth = visibleWidth(layoutLine.text);
 			let cursorInPadding = false;
@@ -589,17 +597,27 @@ export class Editor implements Component, Focusable {
 			const padding = " ".repeat(Math.max(0, contentWidth - lineVisibleWidth));
 			const lineRightPadding = cursorInPadding ? rightPadding.slice(1) : rightPadding;
 
-			// Render the line (no side borders, just horizontal lines above and below)
-			result.push(`${leftPadding}${displayText}${padding}${lineRightPadding}`);
+			if (showAccent) {
+				const indicator =
+					index === 0 && this.scrollOffset > 0
+						? "↑"
+						: index === visibleLines.length - 1 && linesBelow > 0
+							? "↓"
+							: "┃";
+				result.push(`${leftPadding}${this.borderColor(indicator)} ${displayText}${padding}${lineRightPadding}`);
+			} else {
+				result.push(`${leftPadding}${displayText}${padding}${lineRightPadding}`);
+			}
 		}
 
-		// Render bottom border (with scroll indicator if more content below)
-		const linesBelow = layoutLines.length - (this.scrollOffset + visibleLines.length);
-		if (linesBelow > 0) {
-			const border = createScrollBorder("↓", linesBelow, width);
-			result.push(this.borderColor(border));
-		} else {
-			result.push(horizontal.repeat(width));
+		if (!showAccent) {
+			// Render bottom border (with scroll indicator if more content below)
+			if (linesBelow > 0) {
+				const border = createScrollBorder("↓", linesBelow, width);
+				result.push(this.borderColor(border));
+			} else {
+				result.push(horizontal.repeat(width));
+			}
 		}
 
 		// Add autocomplete list if active
@@ -608,7 +626,8 @@ export class Editor implements Component, Focusable {
 			for (const line of autocompleteResult) {
 				const lineWidth = visibleWidth(line);
 				const linePadding = " ".repeat(Math.max(0, contentWidth - lineWidth));
-				result.push(`${leftPadding}${line}${linePadding}${rightPadding}`);
+				const autocompleteIndent = showAccent ? "  " : "";
+				result.push(`${leftPadding}${autocompleteIndent}${line}${linePadding}${rightPadding}`);
 			}
 		}
 

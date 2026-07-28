@@ -700,6 +700,25 @@ describe("Editor component", () => {
 	});
 
 	describe("Scroll indicators", () => {
+		it("renders an accent rail instead of horizontal borders", () => {
+			const width = 20;
+			const borderColor = (text: string) => `\x1b[35m${text}\x1b[39m`;
+			const editor = new Editor(
+				createTestTUI(width),
+				{ ...defaultEditorTheme, borderColor },
+				{ borderStyle: "accent" },
+			);
+			editor.setText("first\nsecond");
+
+			const lines = editor.render(width);
+			assert.strictEqual(lines.length, 2);
+			for (const line of lines) {
+				assert.ok(line.startsWith(`${borderColor("┃")} `));
+				assert.ok(!stripVTControlCharacters(line).includes("─"));
+				assert.strictEqual(visibleWidth(line), width);
+			}
+		});
+
 		it("keeps truncated scroll indicators within width and preserves their color (issue #6962)", () => {
 			const width = 10;
 			const borderColor = (text: string) => `\x1b[35m${text}\x1b[39m`;
