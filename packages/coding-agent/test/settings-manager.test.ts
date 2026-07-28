@@ -25,6 +25,17 @@ describe("SettingsManager", () => {
 		}
 	});
 
+	describe("thinking disclosure", () => {
+		it("defaults thinking blocks to collapsed while respecting an explicit visible setting", () => {
+			const manager = SettingsManager.create(projectDir, agentDir);
+			expect(manager.getHideThinkingBlock()).toBe(true);
+
+			writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ hideThinkingBlock: false }));
+			const visibleManager = SettingsManager.create(projectDir, agentDir);
+			expect(visibleManager.getHideThinkingBlock()).toBe(false);
+		});
+	});
+
 	describe("preserves externally added settings", () => {
 		it("should preserve enabledModels when changing thinking level", async () => {
 			// Create initial settings file

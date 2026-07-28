@@ -113,7 +113,48 @@ describe("AssistantMessageComponent", () => {
 		component.setOutputPad(0);
 		const updatedLines = component.render(80).map((line) => stripAnsi(line));
 		expect(updatedLines.some((line) => line.startsWith("hello"))).toBe(true);
-		expect(updatedLines.some((line) => line.startsWith("reasoning"))).toBe(true);
+		expect(updatedLines.some((line) => line.startsWith("  reasoning"))).toBe(true);
+	});
+
+	test("collapses thinking by default and toggles only from its disclosure row", () => {
+		initTheme("dark");
+
+		const component = new AssistantMessageComponent(
+			createAssistantMessage([{ type: "thinking", thinking: "private reasoning" }]),
+		);
+		let lines = component.render(80);
+		expect(stripAnsi(lines.join("\n"))).toContain("▶ Thinking...");
+		expect(stripAnsi(lines.join("\n"))).not.toContain("private reasoning");
+
+		const disclosureRow = lines.findIndex((line) => stripAnsi(line).includes("▶ Thinking..."));
+		const target = component.getMouseTargetAtRow(disclosureRow);
+		expect(target?.y).toBe(0);
+		target?.component.handleMouse?.({ type: "press", button: 0, x: 1, y: target.y });
+
+		lines = component.render(80);
+		expect(stripAnsi(lines.join("\n"))).toContain("▼ Thinking...");
+		expect(stripAnsi(lines.join("\n"))).toContain("private reasoning");
+
+		const detailsRow = lines.findIndex((line) => stripAnsi(line).includes("private reasoning"));
+		const detailsTarget = component.getMouseTargetAtRow(detailsRow);
+		detailsTarget?.component.handleMouse?.({ type: "press", button: 0, x: 3, y: detailsTarget.y });
+		expect(stripAnsi(component.render(80).join("\n"))).toContain("private reasoning");
+	});
+
+	test("preserves an individually expanded thinking block across streaming updates", () => {
+		initTheme("dark");
+
+		const component = new AssistantMessageComponent(
+			createAssistantMessage([{ type: "thinking", thinking: "first partial thought" }]),
+		);
+		const disclosureRow = component.render(80).findIndex((line) => stripAnsi(line).includes("▶ Thinking..."));
+		const target = component.getMouseTargetAtRow(disclosureRow);
+		target?.component.handleMouse?.({ type: "press", button: 0, x: 1, y: target.y });
+
+		component.updateContent(createAssistantMessage([{ type: "thinking", thinking: "updated complete thought" }]));
+		const rendered = stripAnsi(component.render(80).join("\n"));
+		expect(rendered).toContain("▼ Thinking...");
+		expect(rendered).toContain("updated complete thought");
 	});
 
 	test("uses configured output padding for user messages", () => {

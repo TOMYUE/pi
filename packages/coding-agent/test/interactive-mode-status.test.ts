@@ -6,6 +6,7 @@ import { type Component, Container, type Focusable, TUI } from "../../tui/src/tu
 import { VirtualTerminal } from "../../tui/test/virtual-terminal.ts";
 import type { AutocompleteProviderFactory } from "../src/core/extensions/types.ts";
 import type { SourceInfo } from "../src/core/source-info.ts";
+import { AssistantMessageComponent } from "../src/modes/interactive/components/assistant-message.ts";
 import type { AuthSelectorProvider } from "../src/modes/interactive/components/oauth-selector.ts";
 import { InteractiveMode, WelcomeComponent } from "../src/modes/interactive/interactive-mode.ts";
 import { initTheme } from "../src/modes/interactive/theme/theme.ts";
@@ -145,6 +146,31 @@ describe("InteractiveMode.setToolsExpanded", () => {
 		expect(loadedResourcesChild.setExpanded).toHaveBeenCalledWith(true);
 		expect(chatChild.setExpanded).toHaveBeenCalledWith(true);
 		expect(fakeThis.ui.requestRender).toHaveBeenCalledTimes(1);
+	});
+});
+
+describe("InteractiveMode.toggleThinkingBlockVisibility", () => {
+	test("updates existing assistant components without rebuilding tool entries", () => {
+		const assistant = new AssistantMessageComponent();
+		const setHidden = vi.spyOn(assistant, "setHideThinkingBlock");
+		const toolEntry = { render: () => ["tool"], invalidate: () => {} };
+		const chatContainer = new Container();
+		chatContainer.addChild(assistant);
+		chatContainer.addChild(toolEntry);
+		const fakeThis: any = {
+			hideThinkingBlock: false,
+			settingsManager: { setHideThinkingBlock: vi.fn() },
+			chatContainer,
+			showStatus: vi.fn(),
+		};
+
+		(InteractiveMode as any).prototype.toggleThinkingBlockVisibility.call(fakeThis);
+
+		expect(fakeThis.hideThinkingBlock).toBe(true);
+		expect(fakeThis.settingsManager.setHideThinkingBlock).toHaveBeenCalledWith(true);
+		expect(setHidden).toHaveBeenCalledWith(true);
+		expect(chatContainer.children).toEqual([assistant, toolEntry]);
+		expect(fakeThis.showStatus).toHaveBeenCalledWith("Thinking blocks: hidden");
 	});
 });
 

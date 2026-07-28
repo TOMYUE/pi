@@ -4,7 +4,7 @@ import { Container, Text, type TUI } from "@earendil-works/pi-tui";
 import { beforeAll, describe, expect, test, vi } from "vitest";
 import type { AgentSessionEvent } from "../../../src/core/agent-session.ts";
 import type { SessionEntry } from "../../../src/core/session-manager.ts";
-import type { ToolExecutionComponent } from "../../../src/modes/interactive/components/tool-execution.ts";
+import { ToolExecutionComponent } from "../../../src/modes/interactive/components/tool-execution.ts";
 import { InteractiveMode } from "../../../src/modes/interactive/interactive-mode.ts";
 import { initTheme } from "../../../src/modes/interactive/theme/theme.ts";
 import { stripAnsi } from "../../../src/utils/ansi.ts";
@@ -152,6 +152,7 @@ describe("InteractiveMode.renderSessionEntries", () => {
 		renderSessionEntries.call(fakeThis, createSessionEntries([createAssistantToolCallMessage()]));
 
 		expect(fakeThis.pendingTools.has(TOOL_CALL_ID)).toBe(true);
+		const toolComponent = fakeThis.pendingTools.get(TOOL_CALL_ID);
 
 		await handleEvent.call(fakeThis, {
 			type: "tool_execution_end",
@@ -162,6 +163,8 @@ describe("InteractiveMode.renderSessionEntries", () => {
 		});
 
 		expect(fakeThis.pendingTools.has(TOOL_CALL_ID)).toBe(false);
+		expect(renderChat(fakeThis.chatContainer)).not.toContain("FINAL_RESULT");
+		toolComponent?.setExpanded(true);
 		expect(renderChat(fakeThis.chatContainer)).toContain("FINAL_RESULT");
 	});
 
@@ -177,6 +180,11 @@ describe("InteractiveMode.renderSessionEntries", () => {
 		);
 
 		expect(fakeThis.pendingTools.size).toBe(0);
+		expect(renderChat(fakeThis.chatContainer)).not.toContain("HISTORICAL_RESULT");
+		const toolComponent = fakeThis.chatContainer.children.find(
+			(component): component is ToolExecutionComponent => component instanceof ToolExecutionComponent,
+		);
+		toolComponent?.setExpanded(true);
 		expect(renderChat(fakeThis.chatContainer)).toContain("HISTORICAL_RESULT");
 	});
 });
