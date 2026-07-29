@@ -1,10 +1,26 @@
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 import { Container, Markdown, type MarkdownTheme, Spacer, Text, type TuiMouseEvent } from "@earendil-works/pi-tui";
+import type { HiddenThinkingLabels } from "../../../core/extensions/types.ts";
 import { getMarkdownTheme, theme } from "../theme/theme.ts";
 
 const OSC133_ZONE_START = "\x1b]133;A\x07";
 const OSC133_ZONE_END = "\x1b]133;B\x07";
 const OSC133_ZONE_FINAL = "\x1b]133;C\x07";
+
+export const DEFAULT_HIDDEN_THINKING_LABELS: Readonly<HiddenThinkingLabels> = {
+	active: "Thinking...",
+	complete: "Thought",
+};
+
+export function normalizeHiddenThinkingLabels(labels?: string | HiddenThinkingLabels): HiddenThinkingLabels {
+	if (labels === undefined) {
+		return { ...DEFAULT_HIDDEN_THINKING_LABELS };
+	}
+	if (typeof labels === "string") {
+		return { active: labels, complete: labels };
+	}
+	return { active: labels.active, complete: labels.complete };
+}
 
 class ThinkingBlockComponent extends Container {
 	private text: string;
@@ -12,6 +28,7 @@ class ThinkingBlockComponent extends Container {
 	private markdownTheme: MarkdownTheme;
 	private label: string;
 	private outputPad: number;
+	private disclosure!: Text;
 
 	constructor(text: string, expanded: boolean, markdownTheme: MarkdownTheme, label: string, outputPad: number) {
 		super();
@@ -31,6 +48,12 @@ class ThinkingBlockComponent extends Container {
 		this.rebuild();
 	}
 
+	setLabel(label: string): void {
+		if (this.label === label) return;
+		this.label = label;
+		this.disclosure.setText(this.getDisclosureText());
+	}
+
 	setExpanded(expanded: boolean): void {
 		if (this.expanded === expanded) return;
 		this.expanded = expanded;
@@ -45,8 +68,8 @@ class ThinkingBlockComponent extends Container {
 
 	private rebuild(): void {
 		this.clear();
-		const disclosure = this.expanded ? "▼" : "▶";
-		this.addChild(new Text(theme.italic(theme.fg("thinkingText", `${disclosure} ${this.label}`)), this.outputPad, 0));
+		this.disclosure = new Text(this.getDisclosureText(), this.outputPad, 0);
+		this.addChild(this.disclosure);
 		if (this.expanded) {
 			this.addChild(
 				new Markdown(this.text, this.outputPad + 2, 0, this.markdownTheme, {
@@ -55,6 +78,11 @@ class ThinkingBlockComponent extends Container {
 				}),
 			);
 		}
+	}
+
+	private getDisclosureText(): string {
+		const disclosure = this.expanded ? "▼" : "▶";
+		return theme.italic(theme.fg("thinkingText", `${disclosure} ${this.label}`));
 	}
 }
 
@@ -65,7 +93,7 @@ export class AssistantMessageComponent extends Container {
 	private contentContainer: Container;
 	private hideThinkingBlock: boolean;
 	private markdownTheme: MarkdownTheme;
-	private hiddenThinkingLabel: string;
+	private hiddenThinkingLabels: HiddenThinkingLabels;
 	private outputPad: number;
 	private lastMessage?: AssistantMessage;
 	private streaming = false;
@@ -76,14 +104,14 @@ export class AssistantMessageComponent extends Container {
 		message?: AssistantMessage,
 		hideThinkingBlock = true,
 		markdownTheme: MarkdownTheme = getMarkdownTheme(),
-		hiddenThinkingLabel = "Thinking...",
+		hiddenThinkingLabels?: string | HiddenThinkingLabels,
 		outputPad = 1,
 	) {
 		super();
 
 		this.hideThinkingBlock = hideThinkingBlock;
 		this.markdownTheme = markdownTheme;
-		this.hiddenThinkingLabel = hiddenThinkingLabel;
+		this.hiddenThinkingLabels = normalizeHiddenThinkingLabels(hiddenThinkingLabels);
 		this.outputPad = outputPad;
 
 		// Container for text/thinking content
@@ -112,10 +140,11 @@ export class AssistantMessageComponent extends Container {
 		}
 	}
 
-	setHiddenThinkingLabel(label: string): void {
-		this.hiddenThinkingLabel = label;
-		if (this.lastMessage) {
-			this.updateContent(this.lastMessage);
+	setHiddenThinkingLabel(labels?: string | HiddenThinkingLabels): void {
+		this.hiddenThinkingLabels = normalizeHiddenThinkingLabels(labels);
+		const label = this.streaming ? this.hiddenThinkingLabels.active : this.hiddenThinkingLabels.complete;
+		for (const block of this.thinkingBlocks) {
+			block.setLabel(label);
 		}
 	}
 
@@ -185,7 +214,9 @@ export class AssistantMessageComponent extends Container {
 					.some((c) => (c.type === "text" && c.text.trim()) || (c.type === "thinking" && c.thinking.trim()));
 
 				let thinkingBlock = this.thinkingBlocks[thinkingBlockIndex];
-				const thinkingLabel = this.streaming ? this.hiddenThinkingLabel : "Thought";
+				const thinkingLabel = this.streaming
+					? this.hiddenThinkingLabels.active
+					: this.hiddenThinkingLabels.complete;
 				if (!thinkingBlock) {
 					thinkingBlock = new ThinkingBlockComponent(
 						thinkingBlocks.join("\n\n"),

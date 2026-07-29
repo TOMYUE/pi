@@ -1,5 +1,6 @@
 import type { AssistantMessage } from "@earendil-works/pi-ai";
-import { describe, expect, test } from "vitest";
+import type { Container } from "@earendil-works/pi-tui";
+import { describe, expect, test, vi } from "vitest";
 import { AssistantMessageComponent } from "../src/modes/interactive/components/assistant-message.ts";
 import { UserMessageComponent } from "../src/modes/interactive/components/user-message.ts";
 import { initTheme } from "../src/modes/interactive/theme/theme.ts";
@@ -164,6 +165,50 @@ describe("AssistantMessageComponent", () => {
 		expect(completed).toContain("▼ Thought");
 		expect(completed).not.toContain("Thinking...");
 		expect(completed).toContain("updated complete thought");
+	});
+
+	test("supports custom active and completed thinking labels", () => {
+		initTheme("dark");
+
+		const labels = { active: "Asking Oracle...", complete: "Oracle has spoken" };
+		const component = new AssistantMessageComponent(undefined, true, undefined, labels);
+		component.updateContent(createAssistantMessage([{ type: "thinking", thinking: "consulting" }]), true);
+		expect(stripAnsi(component.render(80).join("\n"))).toContain("▶ Asking Oracle...");
+
+		labels.complete = "mutated";
+		component.updateContent(createAssistantMessage([{ type: "thinking", thinking: "answer received" }]), false);
+		const completed = stripAnsi(component.render(80).join("\n"));
+		expect(completed).toContain("▶ Oracle has spoken");
+		expect(completed).not.toContain("mutated");
+	});
+
+	test("keeps legacy custom thinking labels after completion", () => {
+		initTheme("dark");
+
+		const component = new AssistantMessageComponent(undefined, true, undefined, "Pondering...");
+		component.updateContent(createAssistantMessage([{ type: "thinking", thinking: "partial" }]), true);
+		expect(stripAnsi(component.render(80).join("\n"))).toContain("▶ Pondering...");
+
+		component.updateContent(createAssistantMessage([{ type: "thinking", thinking: "complete" }]), false);
+		expect(stripAnsi(component.render(80).join("\n"))).toContain("▶ Pondering...");
+	});
+
+	test("relabels completed thinking without rebuilding message content", () => {
+		initTheme("dark");
+
+		const component = new AssistantMessageComponent(
+			createAssistantMessage([{ type: "thinking", thinking: "complete" }]),
+			false,
+		);
+		const contentContainer = component.children[0] as Container;
+		const thinkingBlock = contentContainer.children[1] as Container;
+		const markdown = thinkingBlock.children[1];
+		const updateContent = vi.spyOn(component, "updateContent");
+		component.setHiddenThinkingLabel({ active: "Asking Oracle...", complete: "Oracle has spoken" });
+
+		expect(updateContent).not.toHaveBeenCalled();
+		expect(thinkingBlock.children[1]).toBe(markdown);
+		expect(stripAnsi(component.render(80).join("\n"))).toContain("▼ Oracle has spoken");
 	});
 
 	test("uses configured output padding for user messages", () => {

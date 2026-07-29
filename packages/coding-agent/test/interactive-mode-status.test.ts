@@ -174,6 +174,32 @@ describe("InteractiveMode.toggleThinkingBlockVisibility", () => {
 	});
 });
 
+describe("InteractiveMode.setHiddenThinkingLabel", () => {
+	test("updates active and completed messages once and preserves pair semantics", () => {
+		const completed = new AssistantMessageComponent();
+		const streaming = new AssistantMessageComponent();
+		const completedSetter = vi.spyOn(completed, "setHiddenThinkingLabel");
+		const streamingSetter = vi.spyOn(streaming, "setHiddenThinkingLabel");
+		const labels = { active: "Asking Oracle...", complete: "Oracle has spoken" };
+		const fakeThis: any = {
+			hiddenThinkingLabels: { active: "Thinking...", complete: "Thought" },
+			chatContainer: { children: [completed, streaming] },
+			streamingComponent: streaming,
+			ui: { requestRender: vi.fn() },
+		};
+
+		(InteractiveMode as any).prototype.setHiddenThinkingLabel.call(fakeThis, labels);
+
+		expect(fakeThis.hiddenThinkingLabels).toEqual(labels);
+		expect(fakeThis.hiddenThinkingLabels).not.toBe(labels);
+		expect(completedSetter).toHaveBeenCalledOnce();
+		expect(streamingSetter).toHaveBeenCalledOnce();
+		expect(completedSetter).toHaveBeenCalledWith(labels);
+		expect(streamingSetter).toHaveBeenCalledWith(labels);
+		expect(fakeThis.ui.requestRender).toHaveBeenCalledOnce();
+	});
+});
+
 describe("InteractiveMode.cycleThinkingLevel", () => {
 	test("updates the footer and editor border without appending success status", () => {
 		const fakeThis = {

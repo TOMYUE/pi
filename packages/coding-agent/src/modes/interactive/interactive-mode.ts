@@ -70,6 +70,7 @@ import type {
 	ExtensionUIContext,
 	ExtensionUIDialogOptions,
 	ExtensionWidgetOptions,
+	HiddenThinkingLabels,
 	ProjectTrustContext,
 	WorkingIndicatorOptions,
 } from "../../core/extensions/index.ts";
@@ -103,7 +104,11 @@ import { killTrackedDetachedChildren } from "../../utils/shell.ts";
 import { ensureTool } from "../../utils/tools-manager.ts";
 import { checkForNewPiVersion, type LatestPiRelease } from "../../utils/version-check.ts";
 import { ArminComponent } from "./components/armin.ts";
-import { AssistantMessageComponent } from "./components/assistant-message.ts";
+import {
+	AssistantMessageComponent,
+	DEFAULT_HIDDEN_THINKING_LABELS,
+	normalizeHiddenThinkingLabels,
+} from "./components/assistant-message.ts";
 import { BashExecutionComponent } from "./components/bash-execution.ts";
 import { BorderedLoader } from "./components/bordered-loader.ts";
 import { BranchSummaryMessageComponent } from "./components/branch-summary-message.ts";
@@ -388,8 +393,7 @@ export class InteractiveMode {
 	private workingVisible = true;
 	private workingIndicatorOptions: WorkingIndicatorOptions | undefined = undefined;
 	private readonly defaultWorkingMessage = "Working...";
-	private readonly defaultHiddenThinkingLabel = "Thinking...";
-	private hiddenThinkingLabel = this.defaultHiddenThinkingLabel;
+	private hiddenThinkingLabels = normalizeHiddenThinkingLabels(DEFAULT_HIDDEN_THINKING_LABELS);
 
 	private lastSigintTime = 0;
 	private lastEscapeTime = 0;
@@ -1965,15 +1969,12 @@ export class InteractiveMode {
 		this.ui.requestRender();
 	}
 
-	private setHiddenThinkingLabel(label?: string): void {
-		this.hiddenThinkingLabel = label ?? this.defaultHiddenThinkingLabel;
+	private setHiddenThinkingLabel(labels?: string | HiddenThinkingLabels): void {
+		this.hiddenThinkingLabels = normalizeHiddenThinkingLabels(labels);
 		for (const child of this.chatContainer.children) {
 			if (child instanceof AssistantMessageComponent) {
-				child.setHiddenThinkingLabel(this.hiddenThinkingLabel);
+				child.setHiddenThinkingLabel(this.hiddenThinkingLabels);
 			}
-		}
-		if (this.streamingComponent) {
-			this.streamingComponent.setHiddenThinkingLabel(this.hiddenThinkingLabel);
 		}
 		this.ui.requestRender();
 	}
@@ -2234,7 +2235,7 @@ export class InteractiveMode {
 			},
 			setWorkingVisible: (visible) => this.setWorkingVisible(visible),
 			setWorkingIndicator: (options) => this.setWorkingIndicator(options),
-			setHiddenThinkingLabel: (label) => this.setHiddenThinkingLabel(label),
+			setHiddenThinkingLabel: (labels) => this.setHiddenThinkingLabel(labels),
 			setWidget: (key, content, options) => this.setExtensionWidget(key, content, options),
 			setFooter: (factory) => this.setExtensionFooter(factory),
 			setHeader: (factory) => this.setExtensionHeader(factory),
@@ -3027,7 +3028,7 @@ export class InteractiveMode {
 						undefined,
 						this.hideThinkingBlock,
 						this.getMarkdownThemeWithSettings(),
-						this.hiddenThinkingLabel,
+						this.hiddenThinkingLabels,
 						this.outputPad,
 					);
 					this.streamingMessage = event.message;
@@ -3433,7 +3434,7 @@ export class InteractiveMode {
 					message,
 					this.hideThinkingBlock,
 					this.getMarkdownThemeWithSettings(),
-					this.hiddenThinkingLabel,
+					this.hiddenThinkingLabels,
 					this.outputPad,
 				);
 				this.chatContainer.addChild(assistantComponent);
