@@ -68,6 +68,7 @@ export class AssistantMessageComponent extends Container {
 	private hiddenThinkingLabel: string;
 	private outputPad: number;
 	private lastMessage?: AssistantMessage;
+	private streaming = false;
 	private hasToolCalls = false;
 	private thinkingBlocks: ThinkingBlockComponent[] = [];
 
@@ -136,8 +137,9 @@ export class AssistantMessageComponent extends Container {
 		return lines;
 	}
 
-	updateContent(message: AssistantMessage): void {
+	updateContent(message: AssistantMessage, streaming = this.streaming): void {
 		this.lastMessage = message;
+		this.streaming = streaming;
 
 		// Clear content container
 		this.contentContainer.clear();
@@ -183,22 +185,18 @@ export class AssistantMessageComponent extends Container {
 					.some((c) => (c.type === "text" && c.text.trim()) || (c.type === "thinking" && c.thinking.trim()));
 
 				let thinkingBlock = this.thinkingBlocks[thinkingBlockIndex];
+				const thinkingLabel = this.streaming ? this.hiddenThinkingLabel : "Thought";
 				if (!thinkingBlock) {
 					thinkingBlock = new ThinkingBlockComponent(
 						thinkingBlocks.join("\n\n"),
 						!this.hideThinkingBlock,
 						this.markdownTheme,
-						this.hiddenThinkingLabel,
+						thinkingLabel,
 						this.outputPad,
 					);
 					this.thinkingBlocks.push(thinkingBlock);
 				} else {
-					thinkingBlock.update(
-						thinkingBlocks.join("\n\n"),
-						this.markdownTheme,
-						this.hiddenThinkingLabel,
-						this.outputPad,
-					);
+					thinkingBlock.update(thinkingBlocks.join("\n\n"), this.markdownTheme, thinkingLabel, this.outputPad);
 				}
 				thinkingBlockIndex++;
 				this.contentContainer.addChild(thinkingBlock);

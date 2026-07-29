@@ -69,7 +69,7 @@ describe("AssistantMessageComponent", () => {
 		);
 		const rendered = component.render(80).join("\n");
 
-		expect(rendered).toContain("Thinking...");
+		expect(rendered).toContain("Thought");
 		expect(rendered).toContain("maximum output token limit");
 		expect(rendered).toContain("response may be incomplete");
 	});
@@ -88,7 +88,7 @@ describe("AssistantMessageComponent", () => {
 		);
 		const rendered = stripAnsi(component.render(80).join("\n"));
 
-		expect(rendered.match(/Thinking\.\.\./g)).toHaveLength(1);
+		expect(rendered.match(/Thought/g)).toHaveLength(1);
 		expect(rendered).toContain("answer");
 	});
 
@@ -123,16 +123,16 @@ describe("AssistantMessageComponent", () => {
 			createAssistantMessage([{ type: "thinking", thinking: "private reasoning" }]),
 		);
 		let lines = component.render(80);
-		expect(stripAnsi(lines.join("\n"))).toContain("▶ Thinking...");
+		expect(stripAnsi(lines.join("\n"))).toContain("▶ Thought");
 		expect(stripAnsi(lines.join("\n"))).not.toContain("private reasoning");
 
-		const disclosureRow = lines.findIndex((line) => stripAnsi(line).includes("▶ Thinking..."));
+		const disclosureRow = lines.findIndex((line) => stripAnsi(line).includes("▶ Thought"));
 		const target = component.getMouseTargetAtRow(disclosureRow);
 		expect(target?.y).toBe(0);
 		target?.component.handleMouse?.({ type: "press", button: 0, x: 1, y: target.y });
 
 		lines = component.render(80);
-		expect(stripAnsi(lines.join("\n"))).toContain("▼ Thinking...");
+		expect(stripAnsi(lines.join("\n"))).toContain("▼ Thought");
 		expect(stripAnsi(lines.join("\n"))).toContain("private reasoning");
 
 		const detailsRow = lines.findIndex((line) => stripAnsi(line).includes("private reasoning"));
@@ -141,20 +141,29 @@ describe("AssistantMessageComponent", () => {
 		expect(stripAnsi(component.render(80).join("\n"))).toContain("private reasoning");
 	});
 
-	test("preserves an individually expanded thinking block across streaming updates", () => {
+	test("shows Thinking while streaming, then Thought while preserving expansion after completion", () => {
 		initTheme("dark");
 
-		const component = new AssistantMessageComponent(
-			createAssistantMessage([{ type: "thinking", thinking: "first partial thought" }]),
-		);
+		const component = new AssistantMessageComponent();
+		component.updateContent(createAssistantMessage([{ type: "thinking", thinking: "first partial thought" }]), true);
 		const disclosureRow = component.render(80).findIndex((line) => stripAnsi(line).includes("▶ Thinking..."));
 		const target = component.getMouseTargetAtRow(disclosureRow);
 		target?.component.handleMouse?.({ type: "press", button: 0, x: 1, y: target.y });
 
-		component.updateContent(createAssistantMessage([{ type: "thinking", thinking: "updated complete thought" }]));
-		const rendered = stripAnsi(component.render(80).join("\n"));
-		expect(rendered).toContain("▼ Thinking...");
-		expect(rendered).toContain("updated complete thought");
+		component.updateContent(
+			createAssistantMessage([{ type: "thinking", thinking: "updated partial thought" }]),
+			true,
+		);
+		expect(stripAnsi(component.render(80).join("\n"))).toContain("▼ Thinking...");
+
+		component.updateContent(
+			createAssistantMessage([{ type: "thinking", thinking: "updated complete thought" }]),
+			false,
+		);
+		const completed = stripAnsi(component.render(80).join("\n"));
+		expect(completed).toContain("▼ Thought");
+		expect(completed).not.toContain("Thinking...");
+		expect(completed).toContain("updated complete thought");
 	});
 
 	test("uses configured output padding for user messages", () => {
@@ -162,10 +171,10 @@ describe("AssistantMessageComponent", () => {
 
 		const paddedComponent = new UserMessageComponent("hello", undefined, 1);
 		const paddedLines = paddedComponent.render(40).map((line) => stripAnsi(line));
-		expect(paddedLines.some((line) => line.startsWith(" │ hello"))).toBe(true);
+		expect(paddedLines.some((line) => line.startsWith(" ┃ hello"))).toBe(true);
 
 		const unpaddedComponent = new UserMessageComponent("hello", undefined, 0);
 		const unpaddedLines = unpaddedComponent.render(40).map((line) => stripAnsi(line));
-		expect(unpaddedLines.some((line) => line.startsWith("│ hello"))).toBe(true);
+		expect(unpaddedLines.some((line) => line.startsWith("┃ hello"))).toBe(true);
 	});
 });
