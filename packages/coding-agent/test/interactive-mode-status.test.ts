@@ -218,7 +218,7 @@ describe("WelcomeComponent", () => {
 		expect(nonEmptyLines.slice(0, 4).map((line) => line.trimEnd().slice(36))).toEqual([
 			"    ██",
 			"    ██",
-			"████  ██",
+			"████████",
 			"██    ██",
 		]);
 		expect(nonEmptyLines.slice(4).map((line) => line.trim())).toEqual([

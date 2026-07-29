@@ -172,7 +172,7 @@ function isExpandable(obj: unknown): obj is Expandable {
 
 export class WelcomeComponent implements Component {
 	private readonly getTerminalRows: () => number;
-	private static readonly LOGO = ["    ██  ", "    ██  ", "████  ██", "██    ██"];
+	private static readonly LOGO = ["    ██  ", "    ██  ", "████████", "██    ██"];
 
 	constructor(getTerminalRows: () => number) {
 		this.getTerminalRows = getTerminalRows;
@@ -205,7 +205,7 @@ export class WelcomeComponent implements Component {
 		}
 
 		const content = [
-			...WelcomeComponent.LOGO.map((line) => center(theme.fg("accent", line))),
+			...WelcomeComponent.LOGO.map((line) => center(theme.fg("text", line))),
 			"",
 			title,
 			"",
