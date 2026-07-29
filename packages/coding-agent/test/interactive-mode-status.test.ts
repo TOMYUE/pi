@@ -174,6 +174,27 @@ describe("InteractiveMode.toggleThinkingBlockVisibility", () => {
 	});
 });
 
+describe("InteractiveMode.cycleThinkingLevel", () => {
+	test("updates the footer and editor border without appending success status", () => {
+		const fakeThis = {
+			session: { cycleThinkingLevel: vi.fn((): string | undefined => "high") },
+			footer: { invalidate: vi.fn() },
+			updateEditorBorderColor: vi.fn(),
+			showStatus: vi.fn(),
+		};
+
+		(InteractiveMode as any).prototype.cycleThinkingLevel.call(fakeThis);
+
+		expect(fakeThis.footer.invalidate).toHaveBeenCalledTimes(1);
+		expect(fakeThis.updateEditorBorderColor).toHaveBeenCalledTimes(1);
+		expect(fakeThis.showStatus).not.toHaveBeenCalled();
+
+		fakeThis.session.cycleThinkingLevel.mockReturnValue(undefined);
+		(InteractiveMode as any).prototype.cycleThinkingLevel.call(fakeThis);
+		expect(fakeThis.showStatus).toHaveBeenCalledWith("Current model does not support thinking");
+	});
+});
+
 describe("WelcomeComponent", () => {
 	beforeAll(() => {
 		initTheme("dark");
@@ -193,16 +214,22 @@ describe("WelcomeComponent", () => {
 	test("centers the large Pi logo and welcome block in a normal terminal", () => {
 		const lines = new WelcomeComponent(() => 35).render(80);
 		const visibleLines = lines.map((line) => line.replaceAll(/\x1b\[[0-9;]*m/g, ""));
-		expect(visibleLines).toHaveLength(23);
-		expect(visibleLines.slice(12, 18).map((line) => line.trim())).toEqual([
-			"██████╗   ██╗",
-			"██╔══██╗  ╚═╝",
-			"██████╔╝  ██╗",
-			"██╔═══╝   ██║",
-			"██║       ██║",
-			"╚═╝       ╚═╝",
+		const nonEmptyLines = visibleLines.filter((line) => line.trim());
+		expect(nonEmptyLines.slice(0, 4).map((line) => line.trimEnd().slice(36))).toEqual([
+			"    ██",
+			"    ██",
+			"████  ██",
+			"██    ██",
 		]);
-		expect(visibleLines[19]?.trim()).toBe("Welcome to Pi");
+		expect(nonEmptyLines.slice(4).map((line) => line.trim())).toEqual([
+			"Welcome to Pi",
+			"/ for commands",
+			"/hotkeys for shortcuts",
+		]);
+		for (const line of nonEmptyLines.slice(0, 4)) {
+			expect(line.length).toBe(44);
+			expect(line.startsWith(" ".repeat(36))).toBe(true);
+		}
 	});
 });
 

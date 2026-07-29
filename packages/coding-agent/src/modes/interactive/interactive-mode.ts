@@ -172,14 +172,7 @@ function isExpandable(obj: unknown): obj is Expandable {
 
 export class WelcomeComponent implements Component {
 	private readonly getTerminalRows: () => number;
-	private static readonly LOGO = [
-		"██████╗   ██╗",
-		"██╔══██╗  ╚═╝",
-		"██████╔╝  ██╗",
-		"██╔═══╝   ██║",
-		"██║       ██║",
-		"╚═╝       ╚═╝",
-	];
+	private static readonly LOGO = ["    ██  ", "    ██  ", "████  ██", "██    ██"];
 
 	constructor(getTerminalRows: () => number) {
 		this.getTerminalRows = getTerminalRows;
@@ -3926,7 +3919,6 @@ export class InteractiveMode {
 		} else {
 			this.footer.invalidate();
 			this.updateEditorBorderColor();
-			this.showStatus(`Thinking level: ${newLevel}`);
 		}
 	}
 
