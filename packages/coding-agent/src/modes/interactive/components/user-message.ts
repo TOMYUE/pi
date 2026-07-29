@@ -31,7 +31,7 @@ class UserMessageContent implements Component {
 
 	render(width: number): string[] {
 		const leftPadding = " ".repeat(this.outputPad);
-		const prefix = `${leftPadding}${theme.fg("success", "│")} `;
+		const prefix = `${leftPadding}${theme.fg("success", "┃")} `;
 		const contentWidth = Math.max(1, width - this.outputPad - 2);
 		const lines = this.markdown.render(contentWidth).map((line) => truncateToWidth(`${prefix}${line}`, width, ""));
 
