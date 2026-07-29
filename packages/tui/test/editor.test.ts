@@ -760,6 +760,64 @@ describe("Editor component", () => {
 			assert.deepStrictEqual(selections, ["a✅é", "✅éz"]);
 		});
 
+		it("Backspace deletes a wrapped Unicode mouse selection atomically and undo restores it", () => {
+			const editor = new Editor(createTestTUI(12), defaultEditorTheme, { borderStyle: "box" });
+			editor.setText("ab✅ cd efgh");
+			const changes: string[] = [];
+			editor.onChange = (text) => changes.push(text);
+			editor.render(12);
+			editor.handleMouse({ type: "press", button: 0, x: 2, y: 1 });
+			editor.handleMouse({ type: "drag", button: 0, x: 6, y: 2 });
+			editor.handleMouse({ type: "release", button: 0, x: 6, y: 2 });
+
+			editor.handleInput("\x7f");
+			assert.strictEqual(editor.getText(), "gh");
+			assert.deepStrictEqual(editor.getCursor(), { line: 0, col: 0 });
+			assert.deepStrictEqual(changes, ["gh"]);
+
+			editor.handleInput("\x1b[45;5u");
+			assert.strictEqual(editor.getText(), "ab✅ cd efgh");
+		});
+
+		it("Delete removes a multiline mouse selection and leaves the cursor at its start", () => {
+			const editor = new Editor(createTestTUI(20), defaultEditorTheme, { borderStyle: "box" });
+			editor.setText("abc\ndefghi");
+			editor.render(20);
+			editor.handleMouse({ type: "press", button: 0, x: 4, y: 1 });
+			editor.handleMouse({ type: "drag", button: 0, x: 4, y: 2 });
+			editor.handleMouse({ type: "release", button: 0, x: 4, y: 2 });
+
+			editor.handleInput("\x1b[3~");
+			assert.strictEqual(editor.getText(), "abghi");
+			assert.deepStrictEqual(editor.getCursor(), { line: 0, col: 2 });
+		});
+
+		it("closes stale autocomplete when deleting a mouse selection", async () => {
+			const editor = new Editor(createTestTUI(20), defaultEditorTheme, { borderStyle: "box" });
+			const mockProvider: AutocompleteProvider = {
+				getSuggestions: async (_lines, _cursorLine, _cursorCol) => ({
+					items: [{ value: "@main.ts", label: "main.ts" }],
+					prefix: "@m",
+				}),
+				applyCompletion,
+			};
+			editor.setAutocompleteProvider(mockProvider);
+			editor.handleInput("@");
+			editor.handleInput("m");
+			await new Promise((resolve) => setTimeout(resolve, 50));
+			await flushAutocomplete();
+			assert.strictEqual(editor.isShowingAutocomplete(), true);
+
+			editor.render(20);
+			editor.handleMouse({ type: "press", button: 0, x: 2, y: 1 });
+			editor.handleMouse({ type: "drag", button: 0, x: 3, y: 1 });
+			editor.handleMouse({ type: "release", button: 0, x: 3, y: 1 });
+			editor.handleInput("\x7f");
+
+			assert.strictEqual(editor.getText(), "");
+			assert.strictEqual(editor.isShowingAutocomplete(), false);
+		});
+
 		it("renders a rounded input box with a minimum body height", () => {
 			const width = 20;
 			const borderColor = (text: string) => `\x1b[35m${text}\x1b[39m`;
@@ -3875,6 +3933,25 @@ describe("Editor component", () => {
 			const editor = new Editor(createTestTUI(), defaultEditorTheme);
 			const text = pasteWithMarker(editor);
 			assert.match(text, /\[paste #\d+ \+\d+ lines\]/);
+		});
+
+		it("removes selected paste payloads and restores them on undo", () => {
+			const editor = new Editor(createTestTUI(80), defaultEditorTheme, { borderStyle: "box" });
+			editor.handleInput("A");
+			const marker = pasteWithMarker(editor);
+			editor.handleInput("B");
+			const expanded = editor.getExpandedText();
+			editor.render(80);
+
+			editor.handleMouse({ type: "press", button: 0, x: 3, y: 1 });
+			editor.handleMouse({ type: "drag", button: 0, x: 3 + marker.length, y: 1 });
+			editor.handleMouse({ type: "release", button: 0, x: 3 + marker.length, y: 1 });
+			editor.handleInput("\x1b[3~");
+
+			assert.strictEqual(editor.getText(), "A");
+			assert.strictEqual(editor.getExpandedText(), "A");
+			editor.handleInput("\x1b[45;5u");
+			assert.strictEqual(editor.getExpandedText(), expanded);
 		});
 
 		it("treats paste marker as single unit for right arrow", () => {

@@ -747,10 +747,21 @@ export class Editor implements Component, Focusable {
 
 	handleInput(data: string): void {
 		this.mouseScrolled = false;
+		const kb = getKeybindings();
+		const { start, end } = this.getSelectionRange();
+		if (
+			end > start &&
+			(kb.matches(data, "tui.editor.deleteCharBackward") ||
+				matchesKey(data, "shift+backspace") ||
+				kb.matches(data, "tui.editor.deleteCharForward") ||
+				matchesKey(data, "shift+delete"))
+		) {
+			this.deleteSelection(start, end);
+			return;
+		}
 		this.selectionAnchor = undefined;
 		this.selectionHead = undefined;
 		this.selectionDragging = false;
-		const kb = getKeybindings();
 
 		// Handle character jump mode (awaiting next character to jump to)
 		if (this.jumpMode !== null) {
@@ -1106,6 +1117,32 @@ export class Editor implements Component, Focusable {
 		return this.selectionHead > this.selectionAnchor.start
 			? { start: this.selectionAnchor.start, end: this.selectionHead }
 			: { start: this.selectionHead, end: this.selectionAnchor.end };
+	}
+
+	private deleteSelection(start: number, end: number): void {
+		this.exitHistoryBrowsing();
+		this.lastAction = null;
+		this.jumpMode = null;
+		this.cancelAutocomplete();
+		this.pushUndoSnapshot();
+		const text = this.getText();
+		const before = text.slice(0, start);
+		const updatedText = before + text.slice(end);
+		this.state.lines = updatedText.split("\n");
+		const remainingPasteIds = new Set(
+			[...updatedText.matchAll(PASTE_MARKER_REGEX)].map((match) => Number.parseInt(match[1]!, 10)),
+		);
+		for (const id of this.pastes.keys()) {
+			if (!remainingPasteIds.has(id)) this.pastes.delete(id);
+		}
+		this.pasteCounter = Math.max(0, ...this.pastes.keys());
+		const beforeLines = before.split("\n");
+		this.state.cursorLine = beforeLines.length - 1;
+		this.setCursorCol(beforeLines[beforeLines.length - 1]?.length ?? 0);
+		this.selectionAnchor = undefined;
+		this.selectionHead = undefined;
+		this.selectionDragging = false;
+		this.onChange?.(this.getText());
 	}
 
 	private mouseTextPosition(x: number, y: number): { start: number; end: number } | undefined {
