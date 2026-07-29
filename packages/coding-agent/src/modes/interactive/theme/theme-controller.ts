@@ -23,6 +23,7 @@ export class InteractiveThemeController {
 	private terminalTheme: TerminalTheme = detectTerminalBackgroundFromEnv().theme;
 	private activeThemeName: string | undefined;
 	private autoSyncEnabled = false;
+	private applyRevision = 0;
 
 	constructor(ui: TUI, settingsManager: SettingsManager, showError: (message: string) => void, onChanged: () => void) {
 		this.ui = ui;
@@ -35,10 +36,13 @@ export class InteractiveThemeController {
 	}
 
 	async applyFromSettings(): Promise<void> {
+		const revision = ++this.applyRevision;
 		const themeSetting = this.settingsManager.getThemeSetting();
 		const autoTheme = parseAutoThemeSetting(themeSetting);
 		if (autoTheme) {
-			this.terminalTheme = await detectTerminalThemeForAuto({ ui: this.ui, timeoutMs: 100 });
+			const terminalTheme = await detectTerminalThemeForAuto({ ui: this.ui, timeoutMs: 100 });
+			if (revision !== this.applyRevision) return;
+			this.terminalTheme = terminalTheme;
 			this.setAutoSync(true);
 			this.applyThemeName(this.terminalTheme === "light" ? autoTheme.lightTheme : autoTheme.darkTheme, true);
 			return;
@@ -51,6 +55,7 @@ export class InteractiveThemeController {
 		}
 
 		const detection = await detectTerminalBackgroundTheme({ ui: this.ui, timeoutMs: 100 });
+		if (revision !== this.applyRevision) return;
 		this.terminalTheme = detection.theme;
 		if (!this.applyThemeName(detection.theme).success) return;
 		if (detection.confidence === "high") {
@@ -60,11 +65,13 @@ export class InteractiveThemeController {
 	}
 
 	setThemeName(themeName: string, showError = false): ThemeResult {
+		this.applyRevision += 1;
 		this.setAutoSync(false);
 		return this.applyThemeName(themeName, showError);
 	}
 
 	setThemeInstance(themeInstance: Theme): ThemeResult {
+		this.applyRevision += 1;
 		this.setAutoSync(false);
 		setThemeInstance(themeInstance);
 		this.activeThemeName = "<in-memory>";
@@ -73,6 +80,7 @@ export class InteractiveThemeController {
 	}
 
 	preview(themeSettingOrName: string): void {
+		this.applyRevision += 1;
 		const themeName = resolveThemeSetting(themeSettingOrName, this.terminalTheme) ?? this.activeThemeName;
 		if (!themeName) return;
 		if (setTheme(themeName, true).success) {
@@ -81,7 +89,12 @@ export class InteractiveThemeController {
 		}
 	}
 
+	cancelPendingApply(): void {
+		this.applyRevision += 1;
+	}
+
 	disableAutoSync(): void {
+		this.cancelPendingApply();
 		this.setAutoSync(false);
 	}
 

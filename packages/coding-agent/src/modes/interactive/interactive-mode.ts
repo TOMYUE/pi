@@ -736,6 +736,15 @@ export class InteractiveMode {
 		this.chatContainer.addChild(new DynamicBorder());
 	}
 
+	private applyThemeFromSettingsInBackground(): void {
+		void this.themeController.applyFromSettings().catch((error: unknown) => {
+			if (this.isShuttingDown || !this.isInitialized) return;
+			try {
+				this.showError(`Failed to apply theme: ${error instanceof Error ? error.message : String(error)}`);
+			} catch {}
+		});
+	}
+
 	async init(): Promise<void> {
 		if (this.isInitialized) return;
 
@@ -790,7 +799,10 @@ export class InteractiveMode {
 		this.ui.start();
 		this.isInitialized = true;
 
-		await this.themeController.applyFromSettings();
+		// Terminal color queries may wait for their timeout in terminals that do not
+		// support them. The environment-derived theme is already active, so refine it
+		// asynchronously instead of blocking the first usable frame.
+		this.applyThemeFromSettingsInBackground();
 
 		// Keep normal startup focused; detailed startup output remains available with --verbose.
 		if (this.options.verbose) {
@@ -3668,6 +3680,7 @@ export class InteractiveMode {
 	private async shutdown(options?: { fromSignal?: boolean }): Promise<void> {
 		if (this.isShuttingDown) return;
 		this.isShuttingDown = true;
+		this.themeController.cancelPendingApply();
 		// Keep signal handlers registered until terminal cleanup has completed.
 		// `signal-exit` checks the listener list during the same SIGTERM/SIGHUP
 		// dispatch and re-sends the signal if only its own listeners remain.
@@ -4344,7 +4357,7 @@ export class InteractiveMode {
 					},
 					onThemeChange: (themeSetting) => {
 						this.settingsManager.setTheme(themeSetting);
-						void this.themeController.applyFromSettings();
+						this.applyThemeFromSettingsInBackground();
 					},
 					onThemePreview: (themeName) => this.themeController.preview(themeName),
 					onHideThinkingBlockChange: (hidden) => {
