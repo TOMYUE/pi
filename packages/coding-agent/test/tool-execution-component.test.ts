@@ -5,6 +5,7 @@ import { beforeAll, describe, expect, test, vi } from "vitest";
 import { getReadmePath } from "../src/config.ts";
 import type { ToolDefinition } from "../src/core/extensions/types.ts";
 import { type BashOperations, createBashToolDefinition } from "../src/core/tools/bash.ts";
+import { createAllToolDefinitions } from "../src/core/tools/index.ts";
 import { createReadTool, createReadToolDefinition } from "../src/core/tools/read.ts";
 import { createWriteToolDefinition } from "../src/core/tools/write.ts";
 import { ToolExecutionComponent } from "../src/modes/interactive/components/tool-execution.ts";
@@ -145,7 +146,7 @@ describe("ToolExecutionComponent parity", () => {
 		expect(component.render(120).join("\n")).not.toContain("\x1b[48;");
 		component.setExpanded(true);
 		const rendered = stripAnsi(component.render(120).join("\n"));
-		expect(rendered).toContain("edit");
+		expect(rendered).toContain("Edited");
 		expect(rendered).toContain("README.md");
 		expect(rendered).not.toContain(":1");
 	});
@@ -161,7 +162,7 @@ describe("ToolExecutionComponent parity", () => {
 			process.cwd(),
 		);
 		const rendered = stripAnsi(component.render(120).join("\n"));
-		expect(rendered).toContain("read");
+		expect(rendered).toContain("Reading...");
 		expect(rendered).toContain("README.md");
 	});
 
@@ -235,7 +236,7 @@ describe("ToolExecutionComponent parity", () => {
 		component.updateResult({ content: [{ type: "text", text: "hello" }], details: undefined, isError: false }, false);
 		component.setExpanded(true);
 		const rendered = stripAnsi(component.render(120).join("\n"));
-		expect(rendered.match(/\bread\b/g)?.length ?? 0).toBe(1);
+		expect(rendered.match(/\bRead\b/g)?.length ?? 0).toBe(1);
 	});
 
 	test("inherits missing built-in result renderer slot from the built-in tool", () => {
@@ -278,7 +279,7 @@ describe("ToolExecutionComponent parity", () => {
 		component.updateResult({ content: [{ type: "text", text: "hello" }], details: undefined, isError: false }, false);
 		component.setExpanded(true);
 		const rendered = stripAnsi(component.render(120).join("\n"));
-		expect(rendered).toContain("read");
+		expect(rendered).toContain("Read");
 		expect(rendered).toContain("README.md");
 		expect(rendered).toContain("override result");
 	});
@@ -402,6 +403,77 @@ describe("ToolExecutionComponent parity", () => {
 		expect(rendered).toContain("done");
 	});
 
+	test("uses a custom tool's human label without duplicating its machine name", () => {
+		const definition = { ...createBaseToolDefinition(), label: "Custom Tool" };
+		const component = new ToolExecutionComponent(
+			"custom_tool",
+			"tool-human-label",
+			{},
+			{},
+			definition,
+			createFakeTui(),
+			process.cwd(),
+		);
+
+		const rendered = stripAnsi(component.render(120).join("\n"));
+		expect(rendered).toContain("▶ Running Custom Tool...");
+		expect(rendered).not.toContain("custom_tool");
+	});
+
+	test("strips the built-in machine name from overrides with a custom label", () => {
+		const component = new ToolExecutionComponent(
+			"read",
+			"tool-read-custom-label",
+			{ path: "README.md" },
+			{},
+			{ ...createBaseToolDefinition("read"), label: "File Reader" },
+			createFakeTui(),
+			process.cwd(),
+		);
+
+		const rendered = stripAnsi(component.render(120).join("\n"));
+		expect(rendered).toContain("▶ Reading... docs README.md");
+		expect(rendered).not.toContain("read docs README.md");
+	});
+
+	test("defines active, completed, and failed labels for every built-in tool", () => {
+		const definitions = createAllToolDefinitions(process.cwd());
+		expect(
+			Object.fromEntries(Object.entries(definitions).map(([name, definition]) => [name, definition.lifecycle])),
+		).toEqual({
+			read: { active: "Reading...", complete: "Read", error: "Read failed" },
+			bash: { active: "Running...", complete: "Ran", error: "Command failed" },
+			edit: { active: "Editing...", complete: "Edited", error: "Edit failed" },
+			write: { active: "Writing...", complete: "Wrote", error: "Write failed" },
+			grep: { active: "Exploring...", complete: "Explored", error: "Explore failed" },
+			find: { active: "Exploring...", complete: "Explored", error: "Explore failed" },
+			ls: { active: "Exploring...", complete: "Explored", error: "Explore failed" },
+		});
+	});
+
+	test("uses extension lifecycle labels across active, completed, and failed states", () => {
+		const definition: ToolDefinition = {
+			...createBaseToolDefinition("check"),
+			label: "check",
+			lifecycle: { active: "Checking...", complete: "Checked", error: "Check failed" },
+		};
+		const component = new ToolExecutionComponent(
+			"check",
+			"tool-check",
+			{},
+			{},
+			definition,
+			createFakeTui(),
+			process.cwd(),
+		);
+
+		expect(stripAnsi(component.render(120).join("\n"))).toContain("▶ Checking...");
+		component.updateResult({ content: [], isError: false }, false);
+		expect(stripAnsi(component.render(120).join("\n"))).toContain("▶ Checked");
+		component.updateResult({ content: [], isError: true }, false);
+		expect(stripAnsi(component.render(120).join("\n"))).toContain("▼ Check failed");
+	});
+
 	test("trims trailing blank display lines from write previews", () => {
 		const component = new ToolExecutionComponent(
 			"write",
@@ -475,7 +547,7 @@ describe("ToolExecutionComponent parity", () => {
 
 		const collapsed = stripAnsi(component.render(120).join("\n"));
 		expect(collapsed).toContain("▶");
-		expect(collapsed).toContain("read");
+		expect(collapsed).toContain("Read");
 		expect(collapsed).toContain("notes.txt");
 		expect(collapsed).not.toContain("hidden content");
 
@@ -503,7 +575,7 @@ describe("ToolExecutionComponent parity", () => {
 			title: "AGENTS.md",
 			path: join(process.cwd(), ".pi", "AGENTS.md"),
 			content: "Hidden resource instructions",
-			compact: "read resource .pi/AGENTS.md",
+			compact: "Read resource .pi/AGENTS.md",
 			hidden: "Hidden resource instructions",
 			absent: undefined,
 		},
@@ -511,7 +583,7 @@ describe("ToolExecutionComponent parity", () => {
 			title: "outside AGENTS.md",
 			path: resolve(process.cwd(), "..", "AGENTS.md"),
 			content: "Hidden outside resource instructions",
-			compact: `read resource ${resolve(process.cwd(), "..", "AGENTS.md").replace(/\\/g, "/")}`,
+			compact: `Read resource ${resolve(process.cwd(), "..", "AGENTS.md").replace(/\\/g, "/")}`,
 			hidden: "Hidden outside resource instructions",
 			absent: undefined,
 		},
@@ -519,7 +591,7 @@ describe("ToolExecutionComponent parity", () => {
 			title: "Pi documentation",
 			path: getReadmePath(),
 			content: "Hidden docs content",
-			compact: "read docs README.md",
+			compact: "Read docs README.md",
 			hidden: "Hidden docs content",
 			absent: undefined,
 		},
@@ -554,7 +626,7 @@ describe("ToolExecutionComponent parity", () => {
 
 	for (const scenario of [
 		{ title: "SKILL.md", path: join(process.cwd(), "attio", "SKILL.md"), compact: "[skill] attio:120-329" },
-		{ title: "Pi documentation", path: getReadmePath(), compact: "read docs README.md:120-329" },
+		{ title: "Pi documentation", path: getReadmePath(), compact: "Reading... docs README.md:120-329" },
 	] as const) {
 		test(`shows the read line range in compact ${scenario.title} reads before the expand hint`, () => {
 			const component = new ToolExecutionComponent(

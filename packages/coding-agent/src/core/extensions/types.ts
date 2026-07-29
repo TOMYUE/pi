@@ -452,11 +452,22 @@ export interface ToolRenderContext<TState = any, TArgs = any> {
 /**
  * Tool definition for registerTool().
  */
+export interface ToolLifecycleLabels {
+	/** Label shown while the tool is running. */
+	active: string;
+	/** Label shown after the tool completes successfully. */
+	complete: string;
+	/** Label shown after the tool fails. */
+	error?: string;
+}
+
 export interface ToolDefinition<TParams extends TSchema = TSchema, TDetails = unknown, TState = any> {
 	/** Tool name (used in LLM tool calls) */
 	name: string;
 	/** Human-readable label for UI */
 	label: string;
+	/** Optional active/completed labels for the foldable tool row. */
+	lifecycle?: ToolLifecycleLabels;
 	/** Description for LLM */
 	description: string;
 	/** Optional one-line snippet for the Available tools section in the default system prompt. Custom tools are omitted from that section when this is not provided. */

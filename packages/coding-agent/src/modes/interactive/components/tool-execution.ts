@@ -5,13 +5,14 @@ import {
 	getCapabilities,
 	Image,
 	Spacer,
+	sliceByColumn,
 	Text,
 	type TUI,
 	type TuiMouseEvent,
 	truncateToWidth,
 	visibleWidth,
 } from "@earendil-works/pi-tui";
-import type { ToolDefinition, ToolRenderContext } from "../../../core/extensions/types.ts";
+import type { ToolDefinition, ToolLifecycleLabels, ToolRenderContext } from "../../../core/extensions/types.ts";
 import { createAllToolDefinitions, type ToolName } from "../../../core/tools/index.ts";
 import { getTextOutput as getRenderedTextOutput } from "../../../core/tools/render-utils.ts";
 import { stripAnsi } from "../../../utils/ansi.ts";
@@ -26,12 +27,17 @@ export interface ToolExecutionOptions {
 class ToolDisclosureComponent implements Component {
 	private readonly component: Component;
 	private readonly isExpanded: () => boolean;
-	private readonly getStatusMarker: () => string;
+	private readonly getStatusLabel: () => string;
+	private readonly toolLabelPattern: string;
 
-	constructor(component: Component, isExpanded: () => boolean, getStatusMarker: () => string) {
+	constructor(component: Component, isExpanded: () => boolean, getStatusLabel: () => string, toolLabels: string[]) {
 		this.component = component;
 		this.isExpanded = isExpanded;
-		this.getStatusMarker = getStatusMarker;
+		this.getStatusLabel = getStatusLabel;
+		this.toolLabelPattern = [...new Set(toolLabels)]
+			.sort((a, b) => b.length - a.length)
+			.map((label) => label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
+			.join("|");
 	}
 
 	render(width: number): string[] {
@@ -47,8 +53,13 @@ class ToolDisclosureComponent implements Component {
 			Math.max(1, visibleWidth(lines[headerRow]) - trailingSpaces),
 			"",
 		);
+		const toolLabelMatch = stripAnsi(callSummary).match(
+			new RegExp(`^\\s*(?:${this.toolLabelPattern})(?:\\s+|$)`, "i"),
+		);
+		const removedWidth = toolLabelMatch ? visibleWidth(toolLabelMatch[0]) : 0;
+		const details = sliceByColumn(callSummary, removedWidth, visibleWidth(callSummary) - removedWidth);
 		const header = truncateToWidth(
-			`${this.getStatusMarker()} ${callSummary} ${theme.fg("toolTitle", disclosure)}`,
+			`${theme.fg("toolTitle", disclosure)} ${this.getStatusLabel()}${details ? ` ${details}` : ""}`,
 			width,
 			"",
 		);
@@ -186,7 +197,7 @@ export class ToolExecutionComponent extends Container {
 	}
 
 	private createCallFallback(): Component {
-		return new Text(theme.fg("toolTitle", theme.bold(this.toolName)), 0, 0);
+		return new Text(theme.fg("toolTitle", theme.bold(this.getToolLabel())), 0, 0);
 	}
 
 	private createResultFallback(): Component | undefined {
@@ -197,10 +208,30 @@ export class ToolExecutionComponent extends Container {
 		return new Text(theme.fg("toolOutput", output), 0, 0);
 	}
 
-	private getStatusMarker(): string {
-		if (this.isPartial) return theme.fg("muted", "·");
-		if (this.result?.isError) return theme.fg("error", "✗");
-		return theme.fg("success", "✓");
+	private getToolLabel(): string {
+		return this.toolDefinition?.label || this.builtInToolDefinition?.label || this.toolName;
+	}
+
+	private getToolLabels(): string[] {
+		return [this.getToolLabel(), this.toolName];
+	}
+
+	private getLifecycleLabels(): ToolLifecycleLabels {
+		const lifecycle = this.toolDefinition?.lifecycle ?? this.builtInToolDefinition?.lifecycle;
+		if (lifecycle) return lifecycle;
+		const label = this.getToolLabel();
+		return {
+			active: `Running ${label}...`,
+			complete: `Completed ${label}`,
+			error: `Failed ${label}`,
+		};
+	}
+
+	private getStatusLabel(): string {
+		const lifecycle = this.getLifecycleLabels();
+		if (this.isPartial) return theme.italic(theme.fg("muted", lifecycle.active));
+		if (this.result?.isError) return theme.fg("error", lifecycle.error ?? `Failed ${this.getToolLabel()}`);
+		return theme.fg("success", lifecycle.complete);
 	}
 
 	updateArgs(args: any): void {
@@ -336,7 +367,8 @@ export class ToolExecutionComponent extends Container {
 				this.callDisclosureComponent = new ToolDisclosureComponent(
 					this.createCallFallback(),
 					() => this.expanded,
-					() => this.getStatusMarker(),
+					() => this.getStatusLabel(),
+					this.getToolLabels(),
 				);
 				renderContainer.addChild(this.callDisclosureComponent);
 				hasContent = true;
@@ -347,7 +379,8 @@ export class ToolExecutionComponent extends Container {
 					this.callDisclosureComponent = new ToolDisclosureComponent(
 						component,
 						() => this.expanded,
-						() => this.getStatusMarker(),
+						() => this.getStatusLabel(),
+						this.getToolLabels(),
 					);
 					renderContainer.addChild(this.callDisclosureComponent);
 					hasContent = true;
@@ -356,7 +389,8 @@ export class ToolExecutionComponent extends Container {
 					this.callDisclosureComponent = new ToolDisclosureComponent(
 						this.createCallFallback(),
 						() => this.expanded,
-						() => this.getStatusMarker(),
+						() => this.getStatusLabel(),
+						this.getToolLabels(),
 					);
 					renderContainer.addChild(this.callDisclosureComponent);
 					hasContent = true;
@@ -449,7 +483,7 @@ export class ToolExecutionComponent extends Container {
 
 	private formatToolExecution(includeDetails: boolean): string {
 		const disclosure = includeDetails ? "▼" : "▶";
-		let text = `${this.getStatusMarker()} ${theme.fg("toolTitle", theme.bold(this.toolName))} ${theme.fg("toolTitle", disclosure)}`;
+		let text = `${theme.fg("toolTitle", disclosure)} ${this.getStatusLabel()}`;
 		if (!includeDetails) return text;
 		const content = JSON.stringify(this.args, null, 2);
 		if (content) {
