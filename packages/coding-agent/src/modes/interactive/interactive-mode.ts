@@ -172,7 +172,6 @@ function isExpandable(obj: unknown): obj is Expandable {
 
 export class WelcomeComponent implements Component {
 	private readonly getTerminalRows: () => number;
-	private static readonly LOGO = ["    ██  ", "    ██  ", "████████", "██    ██"];
 
 	constructor(getTerminalRows: () => number) {
 		this.getTerminalRows = getTerminalRows;
@@ -198,19 +197,7 @@ export class WelcomeComponent implements Component {
 		if (terminalRows <= 8) return [title];
 		if (terminalRows === 9) return [title, renderedHints[0]];
 		if (terminalRows === 10) return [title, ...renderedHints];
-		if (terminalRows < 18 || width < visibleWidth(WelcomeComponent.LOGO[0])) {
-			const compactContent = [title, "", ...renderedHints];
-			const topPadding = Math.max(1, Math.floor((terminalRows - compactContent.length) / 2));
-			return [...Array.from({ length: topPadding }, () => ""), ...compactContent];
-		}
-
-		const content = [
-			...WelcomeComponent.LOGO.map((line) => center(theme.fg("text", line))),
-			"",
-			title,
-			"",
-			...renderedHints,
-		];
+		const content = [title, "", ...renderedHints];
 		const topPadding = Math.max(0, Math.floor((terminalRows - content.length) / 2));
 		return [...Array.from({ length: topPadding }, () => ""), ...content];
 	}

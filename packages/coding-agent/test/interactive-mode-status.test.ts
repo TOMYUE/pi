@@ -211,25 +211,17 @@ describe("WelcomeComponent", () => {
 		for (const line of lines) expect(line.replaceAll(/\x1b\[[0-9;]*m/g, "").length).toBeLessThanOrEqual(20);
 	});
 
-	test("centers the large Pi logo and welcome block in a normal terminal", () => {
+	test("centers the welcome block without a logo in a normal terminal", () => {
 		const lines = new WelcomeComponent(() => 35).render(80);
 		const visibleLines = lines.map((line) => line.replaceAll(/\x1b\[[0-9;]*m/g, ""));
 		const nonEmptyLines = visibleLines.filter((line) => line.trim());
-		expect(nonEmptyLines.slice(0, 4).map((line) => line.trimEnd().slice(36))).toEqual([
-			"    ██",
-			"    ██",
-			"████████",
-			"██    ██",
-		]);
-		expect(nonEmptyLines.slice(4).map((line) => line.trim())).toEqual([
+		expect(nonEmptyLines.map((line) => line.trim())).toEqual([
 			"Welcome to Pi",
 			"/ for commands",
 			"/hotkeys for shortcuts",
 		]);
-		for (const line of nonEmptyLines.slice(0, 4)) {
-			expect(line.length).toBe(44);
-			expect(line.startsWith(" ".repeat(36))).toBe(true);
-		}
+		expect(visibleLines.some((line) => line.includes("█"))).toBe(false);
+		expect(visibleLines.findIndex((line) => line.includes("Welcome to Pi"))).toBe(15);
 	});
 });
 
