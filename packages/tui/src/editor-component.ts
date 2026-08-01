@@ -69,6 +69,9 @@ export interface EditorComponent extends Component {
 	/** Border color function */
 	borderColor?: (str: string) => string;
 
+	/** Set a dynamic label rendered across the bottom-right border; returns whether this editor supports it */
+	setBottomBorderLabel?(label: (() => string) | undefined): boolean;
+
 	/** Set horizontal padding */
 	setPaddingX?(padding: number): void;
 

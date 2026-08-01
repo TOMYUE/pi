@@ -534,6 +534,8 @@ export class InteractiveMode {
 		this.footerDataProvider = new FooterDataProvider(this.sessionManager.getCwd());
 		this.footer = new FooterComponent(this.session, this.footerDataProvider);
 		this.footer.setAutoCompactEnabled(this.session.autoCompactionEnabled);
+		this.defaultEditor.setBottomBorderLabel(() => theme.fg("dim", this.footer.getProjectLabel()));
+		this.footer.setProjectLabelVisible(false);
 
 		// Load hide thinking block setting
 		this.hideThinkingBlock = this.settingsManager.getHideThinkingBlock();
@@ -2486,6 +2488,9 @@ export class InteractiveMode {
 			if (newEditor.setPaddingX !== undefined) {
 				newEditor.setPaddingX(this.defaultEditor.getPaddingX());
 			}
+			const projectLabelOnBorder =
+				newEditor.setBottomBorderLabel?.(() => theme.fg("dim", this.footer.getProjectLabel())) ?? false;
+			this.footer.setProjectLabelVisible(!projectLabelOnBorder);
 
 			// Set autocomplete if supported
 			if (newEditor.setAutocompleteProvider && this.autocompleteProvider) {
@@ -2522,6 +2527,7 @@ export class InteractiveMode {
 			// Restore default editor with text from custom editor
 			this.defaultEditor.setText(currentText);
 			this.editor = this.defaultEditor;
+			this.footer.setProjectLabelVisible(false);
 		}
 
 		this.editorContainer.addChild(this.editor as Component);

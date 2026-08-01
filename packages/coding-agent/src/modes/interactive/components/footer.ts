@@ -43,12 +43,10 @@ export function formatCwdForFooter(cwd: string, home: string | undefined): strin
 	return relativeToHome === "" ? "~" : `~${sep}${relativeToHome}`;
 }
 
-/**
- * Footer component that shows pwd, token stats, and context usage.
- * Computes token/context stats from session, gets git branch and extension statuses from provider.
- */
+/** Footer component that shows token stats, context usage, and extension statuses. */
 export class FooterComponent implements Component {
 	private autoCompactEnabled = true;
+	private projectLabelVisible = true;
 	private session: AgentSession;
 	private footerData: ReadonlyFooterDataProvider;
 
@@ -65,6 +63,10 @@ export class FooterComponent implements Component {
 		this.autoCompactEnabled = enabled;
 	}
 
+	setProjectLabelVisible(visible: boolean): void {
+		this.projectLabelVisible = visible;
+	}
+
 	/**
 	 * No-op: git branch caching now handled by provider.
 	 * Kept for compatibility with existing call sites in interactive-mode.
@@ -79,6 +81,22 @@ export class FooterComponent implements Component {
 	 */
 	dispose(): void {
 		// Git watcher cleanup handled by provider
+	}
+
+	getProjectLabel(): string {
+		let project = formatCwdForFooter(
+			this.session.sessionManager.getCwd(),
+			process.env.HOME || process.env.USERPROFILE,
+		);
+		const branch = this.footerData.getGitBranch();
+		if (branch) {
+			project = `${project} (${branch})`;
+		}
+		const sessionName = this.session.sessionManager.getSessionName();
+		if (sessionName) {
+			project = `${project} • ${sessionName}`;
+		}
+		return project;
 	}
 
 	render(width: number): string[] {
@@ -109,21 +127,6 @@ export class FooterComponent implements Component {
 		const contextWindow = contextUsage?.contextWindow ?? state.model?.contextWindow ?? 0;
 		const contextPercentValue = contextUsage?.percent ?? 0;
 		const contextPercent = contextUsage?.percent !== null ? contextPercentValue.toFixed(1) : "?";
-
-		// Replace home directory with ~
-		let pwd = formatCwdForFooter(this.session.sessionManager.getCwd(), process.env.HOME || process.env.USERPROFILE);
-
-		// Add git branch if available
-		const branch = this.footerData.getGitBranch();
-		if (branch) {
-			pwd = `${pwd} (${branch})`;
-		}
-
-		// Add session name if set
-		const sessionName = this.session.sessionManager.getSessionName();
-		if (sessionName) {
-			pwd = `${pwd} • ${sessionName}`;
-		}
 
 		// Build stats line
 		const statsParts = [];
@@ -226,8 +229,12 @@ export class FooterComponent implements Component {
 		const remainder = statsLine.slice(statsLeft.length); // padding + rightSide
 		const dimRemainder = theme.fg("dim", remainder);
 
-		const pwdLine = truncateToWidth(theme.fg("dim", pwd), width, theme.fg("dim", "..."));
-		const lines = [pwdLine, dimStatsLeft + dimRemainder];
+		const lines = this.projectLabelVisible
+			? [
+					truncateToWidth(theme.fg("dim", this.getProjectLabel()), width, theme.fg("dim", "...")),
+					dimStatsLeft + dimRemainder,
+				]
+			: [dimStatsLeft + dimRemainder];
 
 		// Add extension statuses on a single line, sorted by key alphabetically
 		const extensionStatuses = this.footerData.getExtensionStatuses();

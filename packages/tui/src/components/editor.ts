@@ -325,6 +325,7 @@ export class Editor implements Component, Focusable {
 	private autocompleteStartToken: number = 0;
 	private autocompleteRequestId: number = 0;
 	private borderStyle: "horizontal" | "box";
+	private bottomBorderLabel: (() => string) | undefined;
 
 	// Paste tracking for large pastes
 	private pastes: Map<number, string> = new Map();
@@ -386,6 +387,11 @@ export class Editor implements Component, Focusable {
 
 	getPaddingX(): number {
 		return this.paddingX;
+	}
+
+	setBottomBorderLabel(label: (() => string) | undefined): boolean {
+		this.bottomBorderLabel = label;
+		return this.borderStyle === "box";
 	}
 
 	setPaddingX(padding: number): void {
@@ -665,14 +671,27 @@ export class Editor implements Component, Focusable {
 			for (let index = visibleLines.length; index < minimumBodyLines; index++) {
 				result.push(emptyBodyLine);
 			}
-			const bottomBorder =
-				linesBelow > 0 ? `╰${createScrollBorder("↓", linesBelow, width - 2)}╯` : `╰${"─".repeat(width - 2)}╯`;
-			result.push(boxBorderColor(bottomBorder));
+			const innerWidth = width - 2;
+			const scrollIndicatorWidth = linesBelow > 0 ? visibleWidth(`─── ↓ ${linesBelow} more `) : 0;
+			const labelWidth = Math.max(0, innerWidth - scrollIndicatorWidth - 2);
+			const label = truncateToWidth(this.bottomBorderLabel?.().trim() ?? "", labelWidth, "...");
+			if (label) {
+				const borderWidth = Math.max(0, innerWidth - visibleWidth(label) - 2);
+				const border = linesBelow > 0 ? createScrollBorder("↓", linesBelow, borderWidth) : "─".repeat(borderWidth);
+				result.push(`${boxBorderColor(`╰${border} `)}${label}${boxBorderColor(" ╯")}`);
+			} else {
+				const bottomBorder =
+					linesBelow > 0 ? `╰${createScrollBorder("↓", linesBelow, innerWidth)}╯` : `╰${"─".repeat(innerWidth)}╯`;
+				result.push(boxBorderColor(bottomBorder));
+			}
 		} else {
 			// Render bottom border (with scroll indicator if more content below)
 			if (linesBelow > 0) {
 				const border = createScrollBorder("↓", linesBelow, width);
 				result.push(this.borderColor(border));
+			} else if (this.borderStyle === "box" && this.bottomBorderLabel) {
+				const label = truncateToWidth(this.bottomBorderLabel().trim(), width, "...");
+				result.push("─".repeat(Math.max(0, width - visibleWidth(label))) + label);
 			} else {
 				result.push(horizontal.repeat(width));
 			}

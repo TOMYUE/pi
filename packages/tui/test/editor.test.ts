@@ -839,6 +839,66 @@ describe("Editor component", () => {
 			}
 		});
 
+		it("right-aligns a bottom border label while preserving long-input scroll indicators", () => {
+			const width = 40;
+			const editor = new Editor(createTestTUI(width, 20), defaultEditorTheme, { borderStyle: "box" });
+			editor.setBottomBorderLabel(() => "~/project (main)");
+			editor.setText(Array.from({ length: 12 }, (_, index) => `line ${index}`).join("\n"));
+			editor.render(width);
+			editor.handleMouse({ type: "wheel", button: 0, x: 5, y: 2, wheelDirection: "up" });
+
+			const bottomBorder = stripVTControlCharacters(editor.render(width).at(-1)!);
+			assert.match(bottomBorder, /^╰─── ↓ \d+ more .* ~\/project \(main\) ╯$/);
+			assert.strictEqual(visibleWidth(bottomBorder), width);
+		});
+
+		it("truncates a bottom border label without breaking narrow rounded borders", () => {
+			const width = 12;
+			const editor = new Editor(createTestTUI(width, 20), defaultEditorTheme, { borderStyle: "box" });
+			editor.setBottomBorderLabel(() => "~/a-very-long-project (main)");
+
+			const bottomBorder = stripVTControlCharacters(editor.render(width).at(-1)!);
+			assert.strictEqual(visibleWidth(bottomBorder), width);
+			assert.match(bottomBorder, /^╰ .* ╯$/);
+		});
+
+		it("reports border-label support only for box editors", () => {
+			const boxEditor = new Editor(createTestTUI(), defaultEditorTheme, { borderStyle: "box" });
+			const horizontalEditor = new Editor(createTestTUI(), defaultEditorTheme);
+
+			assert.strictEqual(
+				boxEditor.setBottomBorderLabel(() => "project"),
+				true,
+			);
+			assert.strictEqual(
+				horizontalEditor.setBottomBorderLabel(() => "project"),
+				false,
+			);
+		});
+
+		it("keeps the border label visible below the minimum rounded-box width", () => {
+			const width = 4;
+			const editor = new Editor(createTestTUI(width, 20), defaultEditorTheme, { borderStyle: "box" });
+			editor.setBottomBorderLabel(() => "project");
+
+			const bottomBorder = stripVTControlCharacters(editor.render(width).at(-1)!);
+			assert.strictEqual(visibleWidth(bottomBorder), width);
+			assert.notStrictEqual(bottomBorder, "─".repeat(width));
+		});
+
+		it("prioritizes the long-input scroll indicator over a long bottom border label", () => {
+			const width = 24;
+			const editor = new Editor(createTestTUI(width, 20), defaultEditorTheme, { borderStyle: "box" });
+			editor.setBottomBorderLabel(() => "~/a-very-long-project-name (main)");
+			editor.setText(Array.from({ length: 12 }, (_, index) => `line ${index}`).join("\n"));
+			editor.render(width);
+			editor.handleMouse({ type: "wheel", button: 0, x: 5, y: 2, wheelDirection: "up" });
+
+			const bottomBorder = stripVTControlCharacters(editor.render(width).at(-1)!);
+			assert.match(bottomBorder, /↓ \d+ more/);
+			assert.strictEqual(visibleWidth(bottomBorder), width);
+		});
+
 		it("keeps truncated scroll indicators within width and preserves their color (issue #6962)", () => {
 			const width = 10;
 			const borderColor = (text: string) => `\x1b[35m${text}\x1b[39m`;

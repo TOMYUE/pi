@@ -9,6 +9,7 @@
 - Changed normal interactive startup to show a centered welcome with command and shortcut discovery instead of listing every loaded resource.
 - Changed foldable thinking blocks to distinguish active and completed labels, including extension-defined label pairs.
 - Changed foldable tool rows to show active, completed, and failed lifecycle labels, including extension-defined labels.
+- Changed the composer to place the project and branch label across its bottom-right border.
 
 ### Fixed
 
