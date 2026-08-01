@@ -1,4 +1,5 @@
 import { compare, valid } from "semver";
+import { AUTOMATIC_VERSION_CHECK_ENABLED } from "../config.ts";
 import { getPiUserAgent } from "./pi-user-agent.ts";
 
 const LATEST_VERSION_URL = "https://pi.dev/api/latest-version";
@@ -67,8 +68,11 @@ export async function getLatestPiVersion(
 	return (await getLatestPiRelease(currentVersion, options))?.version;
 }
 
-export async function checkForNewPiVersion(currentVersion: string): Promise<LatestPiRelease | undefined> {
-	if (process.env.PI_SKIP_VERSION_CHECK) return undefined;
+export async function checkForNewPiVersion(
+	currentVersion: string,
+	options: { enabled?: boolean } = {},
+): Promise<LatestPiRelease | undefined> {
+	if (!(options.enabled ?? AUTOMATIC_VERSION_CHECK_ENABLED) || process.env.PI_SKIP_VERSION_CHECK) return undefined;
 
 	try {
 		const latestRelease = await getLatestPiRelease(currentVersion);

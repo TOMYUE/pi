@@ -12,6 +12,7 @@
 
 ### Fixed
 
+- Fixed customized builds advertising upstream Pi updates that could replace their local changes.
 - Fixed model registry reloads unexpectedly fetching remote catalogs instead of only reloading local model configuration.
 - Fixed direct bash execution returning before truncated full-output files were completely written.
 - Fixed mouse-wheel transcript scrolling being unavailable by default in the fullscreen fixed-composer interface.
