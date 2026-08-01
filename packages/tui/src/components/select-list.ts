@@ -13,6 +13,8 @@ export interface SelectItem {
 	value: string;
 	label: string;
 	description?: string;
+	category?: string;
+	shortcut?: string;
 }
 
 export interface SelectListTheme {
@@ -21,6 +23,10 @@ export interface SelectListTheme {
 	description: (text: string) => string;
 	scrollInfo: (text: string) => string;
 	noMatch: (text: string) => string;
+	category?: (text: string) => string;
+	command?: (text: string) => string;
+	shortcut?: (text: string) => string;
+	selectedBackground?: (text: string) => string;
 }
 
 export interface SelectListTruncatePrimaryContext {
@@ -35,6 +41,7 @@ export interface SelectListLayoutOptions {
 	minPrimaryColumnWidth?: number;
 	maxPrimaryColumnWidth?: number;
 	truncatePrimary?: (context: SelectListTruncatePrimaryContext) => string;
+	variant?: "default" | "commandPalette";
 }
 
 export class SelectList implements Component {
@@ -76,7 +83,7 @@ export class SelectList implements Component {
 
 		// If no items match filter, show message
 		if (this.filteredItems.length === 0) {
-			lines.push(this.theme.noMatch("  No matching commands"));
+			lines.push(this.theme.noMatch(truncateToWidth("  No matching commands", width, "")));
 			return lines;
 		}
 
@@ -100,7 +107,7 @@ export class SelectList implements Component {
 		}
 
 		// Add scroll indicators if needed
-		if (startIndex > 0 || endIndex < this.filteredItems.length) {
+		if (this.layout.variant !== "commandPalette" && (startIndex > 0 || endIndex < this.filteredItems.length)) {
 			const scrollText = `  (${this.selectedIndex + 1}/${this.filteredItems.length})`;
 			// Truncate if too long for terminal
 			lines.push(this.theme.scrollInfo(truncateToWidth(scrollText, width - 2, "")));
@@ -143,6 +150,10 @@ export class SelectList implements Component {
 		descriptionSingleLine: string | undefined,
 		primaryColumnWidth: number,
 	): string {
+		if (this.layout.variant === "commandPalette") {
+			return this.renderCommandPaletteItem(item, isSelected, width, descriptionSingleLine);
+		}
+
 		const prefix = isSelected ? "→ " : "  ";
 		const prefixWidth = visibleWidth(prefix);
 
@@ -173,6 +184,53 @@ export class SelectList implements Component {
 		}
 
 		return prefix + truncatedValue;
+	}
+
+	private renderCommandPaletteItem(
+		item: SelectItem,
+		isSelected: boolean,
+		width: number,
+		descriptionSingleLine: string | undefined,
+	): string {
+		const horizontalPadding = 2;
+		const contentWidth = Math.max(1, width - horizontalPadding * 2);
+		if (width < 48) {
+			const command = truncateToWidth(item.label, contentWidth, "").padEnd(contentWidth);
+			const styled = `  ${this.theme.command?.(command) ?? (isSelected ? this.theme.selectedText(command) : command)}  `;
+			const fitted = truncateToWidth(styled, width, "");
+			return isSelected && this.theme.selectedBackground ? this.theme.selectedBackground(fitted) : fitted;
+		}
+		const categoryWidth = Math.min(
+			12,
+			Math.max(6, ...this.filteredItems.map((entry) => visibleWidth(entry.category ?? ""))),
+		);
+		const commandWidth = Math.min(28, Math.max(12, ...this.filteredItems.map((entry) => visibleWidth(entry.label))));
+		const shortcut = truncateToWidth(item.shortcut ?? "", 12, "");
+		const shortcutWidth = visibleWidth(shortcut);
+		const descriptionWidth = Math.max(0, contentWidth - categoryWidth - commandWidth - shortcutWidth - 4);
+
+		const category = truncateToWidth(item.category ?? "", categoryWidth, "").padStart(categoryWidth);
+		const command = truncateToWidth(item.label, commandWidth - 2, "").padEnd(commandWidth);
+		const description = descriptionSingleLine ? truncateToWidth(descriptionSingleLine, descriptionWidth, "") : "";
+		const descriptionPadding = " ".repeat(Math.max(0, descriptionWidth - visibleWidth(description)));
+		const plain = `  ${category}  ${command}${description}${descriptionPadding}${shortcut}  `;
+
+		const styled =
+			"  " +
+			(isSelected
+				? (this.theme.command?.(category) ?? this.theme.selectedText(category))
+				: (this.theme.category?.(category) ?? this.theme.description(category))) +
+			"  " +
+			(this.theme.command?.(command) ?? (isSelected ? this.theme.selectedText(command) : command)) +
+			(isSelected
+				? this.theme.selectedText(description + descriptionPadding)
+				: this.theme.description(description + descriptionPadding)) +
+			(this.theme.shortcut?.(shortcut) ?? shortcut) +
+			"  ";
+
+		const fitted = truncateToWidth(styled, width, "");
+		if (!isSelected || !this.theme.selectedBackground) return fitted;
+		return this.theme.selectedBackground(fitted + " ".repeat(Math.max(0, width - visibleWidth(plain))));
 	}
 
 	private getPrimaryColumnWidth(): number {

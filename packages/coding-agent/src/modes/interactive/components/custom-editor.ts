@@ -1,4 +1,4 @@
-import { Editor, type EditorOptions, type EditorTheme, type TUI } from "@earendil-works/pi-tui";
+import { decodePrintableKey, Editor, type EditorOptions, type EditorTheme, type TUI } from "@earendil-works/pi-tui";
 import type { AppKeybinding, KeybindingsManager } from "../../../core/keybindings.ts";
 
 /**
@@ -12,11 +12,13 @@ export class CustomEditor extends Editor {
 	public onEscape?: () => void;
 	public onCtrlD?: () => void;
 	public onPasteImage?: () => void;
+	/** Opens the slash-command palette. Returns true when the slash key was consumed. */
+	public onCommandPalette: (() => boolean) | undefined = undefined;
 	/** Handler for extension-registered shortcuts. Returns true if handled. */
 	public onExtensionShortcut?: (data: string) => boolean;
 
 	constructor(tui: TUI, theme: EditorTheme, keybindings: KeybindingsManager, options?: EditorOptions) {
-		super(tui, theme, options);
+		super(tui, theme, { ...options, borderStyle: "box" });
 		this.keybindings = keybindings;
 	}
 
@@ -30,6 +32,11 @@ export class CustomEditor extends Editor {
 	handleInput(data: string): void {
 		// Check extension-registered shortcuts first
 		if (this.onExtensionShortcut?.(data)) {
+			return;
+		}
+
+		const printable = decodePrintableKey(data) ?? (data.length === 1 && data.charCodeAt(0) >= 32 ? data : undefined);
+		if (printable === "/" && this.getText().length === 0 && this.onCommandPalette?.()) {
 			return;
 		}
 

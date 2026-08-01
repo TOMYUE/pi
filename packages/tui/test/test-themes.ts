@@ -13,6 +13,10 @@ export const defaultSelectListTheme: SelectListTheme = {
 	description: (text: string) => chalk.dim(text),
 	scrollInfo: (text: string) => chalk.dim(text),
 	noMatch: (text: string) => chalk.dim(text),
+	category: (text: string) => chalk.dim(text),
+	command: (text: string) => chalk.bold(text),
+	shortcut: (text: string) => chalk.blue(text),
+	selectedBackground: (text: string) => chalk.bgBlue(text),
 };
 
 export const defaultMarkdownTheme: MarkdownTheme = {
@@ -35,4 +39,10 @@ export const defaultMarkdownTheme: MarkdownTheme = {
 export const defaultEditorTheme: EditorTheme = {
 	borderColor: (text: string) => chalk.dim(text),
 	selectList: defaultSelectListTheme,
+	commandPalette: {
+		border: (text: string) => chalk.dim(text),
+		title: (text: string) => chalk.bold.yellow(text),
+		prompt: (text: string) => chalk.yellow(text),
+		hint: (text: string) => chalk.dim(text),
+	},
 };

@@ -205,13 +205,16 @@ function toDisplayPath(path) {
 function summarize(values) {
 	const sorted = [...values].sort((a, b) => a - b);
 	const total = sorted.reduce((sum, value) => sum + value, 0);
+	const avg = total / sorted.length;
 	const middle = Math.floor(sorted.length / 2);
 	const median = sorted.length % 2 === 0 ? (sorted[middle - 1] + sorted[middle]) / 2 : sorted[middle];
 	return {
 		min: sorted[0],
 		max: sorted[sorted.length - 1],
-		avg: total / sorted.length,
+		avg,
 		median,
+		p95: sorted[Math.ceil(sorted.length * 0.95) - 1],
+		stddev: Math.sqrt(sorted.reduce((sum, value) => sum + (value - avg) ** 2, 0) / sorted.length),
 	};
 }
 
@@ -221,7 +224,7 @@ function parseStartupTimings(stderr) {
 	let inBlock = false;
 
 	for (const line of lines) {
-		if (line.includes("--- Startup Timings ---")) {
+		if (line.includes("--- Startup Timings:")) {
 			inBlock = true;
 			continue;
 		}
@@ -385,26 +388,32 @@ async function runTuiBenchmarkRun({ runtime, runIndex, measuredIndex, options, p
 	}
 
 	const command = getRuntimeCommand(runtime, "tui", profileDir, profileName, options.cpuProfile);
+	const startedAt = performance.now();
 	const child = spawn(command.executable, command.args, {
 		cwd: packageDir,
 		env: createBenchmarkEnv(options, isolatedAgentDir),
-		stdio: ["inherit", "ignore", "pipe"],
+		stdio: ["inherit", "inherit", "pipe"],
 		shell: process.platform === "win32" && runtime === "bun",
 	});
 
 	let stderr = "";
+	let readyElapsedMs;
 	child.stderr.setEncoding("utf8");
 	child.stderr.on("data", (chunk) => {
 		stderr += chunk;
+		if (readyElapsedMs === undefined && stderr.includes("PI_STARTUP_BENCHMARK_READY")) {
+			readyElapsedMs = performance.now() - startedAt;
+		}
 	});
 
-	const startedAt = performance.now();
 	const exitCode = await waitForExit(child, `Benchmark ${measuredIndex === undefined ? `warmup ${runNumber}` : `run ${measuredIndex}`}`);
-	const elapsedMs = performance.now() - startedAt;
 
 	try {
 		if (exitCode !== 0) {
 			throw new Error(stderr.trim() || `Benchmark child exited with code ${exitCode}`);
+		}
+		if (readyElapsedMs === undefined) {
+			throw new Error("Benchmark child did not report first usable state");
 		}
 
 		const profilePath = options.cpuProfile ? join(profileDir, profileName) : undefined;
@@ -412,7 +421,7 @@ async function runTuiBenchmarkRun({ runtime, runIndex, measuredIndex, options, p
 			throw new Error(`CPU profile was not written: ${profilePath}`);
 		}
 
-		return { elapsedMs, profilePath, timings: parseStartupTimings(stderr) };
+		return { elapsedMs: readyElapsedMs, profilePath, timings: parseStartupTimings(stderr) };
 	} finally {
 		if (tempRoot) {
 			rmSync(tempRoot, { recursive: true, force: true });
@@ -618,6 +627,8 @@ async function main() {
 	process.stdout.write(`  elapsed min:      ${formatMs(elapsedSummary.min)}\n`);
 	process.stdout.write(`  elapsed median:   ${formatMs(elapsedSummary.median)}\n`);
 	process.stdout.write(`  elapsed avg:      ${formatMs(elapsedSummary.avg)}\n`);
+	process.stdout.write(`  elapsed p95:      ${formatMs(elapsedSummary.p95)}\n`);
+	process.stdout.write(`  elapsed stddev:   ${formatMs(elapsedSummary.stddev)}\n`);
 	process.stdout.write(`  elapsed max:      ${formatMs(elapsedSummary.max)}\n`);
 	for (const [label, summary] of timingSummaries.entries()) {
 		process.stdout.write(`  ${label} median: ${formatMs(summary.median)}\n`);

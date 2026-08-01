@@ -36,6 +36,7 @@ import {
 	Text,
 	TruncatedText,
 	TUI,
+	truncateToWidth,
 	visibleWidth,
 } from "@earendil-works/pi-tui";
 import chalk from "chalk";
@@ -69,6 +70,7 @@ import type {
 	ExtensionUIContext,
 	ExtensionUIDialogOptions,
 	ExtensionWidgetOptions,
+	HiddenThinkingLabels,
 	ProjectTrustContext,
 	WorkingIndicatorOptions,
 } from "../../core/extensions/index.ts";
@@ -102,10 +104,15 @@ import { killTrackedDetachedChildren } from "../../utils/shell.ts";
 import { ensureTool } from "../../utils/tools-manager.ts";
 import { checkForNewPiVersion, type LatestPiRelease } from "../../utils/version-check.ts";
 import { ArminComponent } from "./components/armin.ts";
-import { AssistantMessageComponent } from "./components/assistant-message.ts";
+import {
+	AssistantMessageComponent,
+	DEFAULT_HIDDEN_THINKING_LABELS,
+	normalizeHiddenThinkingLabels,
+} from "./components/assistant-message.ts";
 import { BashExecutionComponent } from "./components/bash-execution.ts";
 import { BorderedLoader } from "./components/bordered-loader.ts";
 import { BranchSummaryMessageComponent } from "./components/branch-summary-message.ts";
+import { CommandPaletteComponent } from "./components/command-palette.ts";
 import { CompactionSummaryMessageComponent } from "./components/compaction-summary-message.ts";
 import { CustomEditor } from "./components/custom-editor.ts";
 import { CustomEntryComponent } from "./components/custom-entry.ts";
@@ -166,6 +173,41 @@ interface Expandable {
 
 function isExpandable(obj: unknown): obj is Expandable {
 	return typeof obj === "object" && obj !== null && "setExpanded" in obj && typeof obj.setExpanded === "function";
+}
+
+export class WelcomeComponent implements Component {
+	private readonly getTerminalRows: () => number;
+
+	constructor(getTerminalRows: () => number) {
+		this.getTerminalRows = getTerminalRows;
+	}
+
+	render(width: number): string[] {
+		const center = (text: string): string => {
+			const fitted = truncateToWidth(text, width, "");
+			return " ".repeat(Math.max(0, Math.floor((width - visibleWidth(fitted)) / 2))) + fitted;
+		};
+		const keyWidth = visibleWidth("/hotkeys");
+		const hints = [
+			`${theme.bold("/".padStart(keyWidth))} ${theme.fg("dim", "for commands")}`,
+			`${theme.bold("/hotkeys")} ${theme.fg("dim", "for shortcuts")}`,
+		];
+		const hintWidth = Math.max(...hints.map(visibleWidth));
+		const renderedHints =
+			width >= hintWidth
+				? hints.map((hint) => " ".repeat(Math.floor((width - hintWidth) / 2)) + hint)
+				: hints.map((hint) => center(hint));
+		const terminalRows = this.getTerminalRows();
+		const title = center(theme.bold(`Welcome to ${APP_NAME === "pi" ? "Pi" : APP_NAME}`));
+		if (terminalRows <= 8) return [title];
+		if (terminalRows === 9) return [title, renderedHints[0]];
+		if (terminalRows === 10) return [title, ...renderedHints];
+		const content = [title, "", ...renderedHints];
+		const topPadding = Math.max(0, Math.floor((terminalRows - content.length) / 2));
+		return [...Array.from({ length: topPadding }, () => ""), ...content];
+	}
+
+	invalidate(): void {}
 }
 
 class ExpandableText extends Text implements Expandable {
@@ -323,6 +365,8 @@ export interface InteractiveModeOptions {
 export class InteractiveMode {
 	private runtimeHost: AgentSessionRuntime;
 	private ui: TUI;
+	private transcriptContainer: Container;
+	private composerContainer: Container;
 	private loadedResourcesContainer: Container;
 	private chatContainer: Container;
 	private pendingMessagesContainer: Container;
@@ -332,6 +376,7 @@ export class InteractiveMode {
 	private editorComponentFactory: EditorFactory | undefined;
 	private autocompleteProvider: AutocompleteProvider | undefined;
 	private autocompleteProviderWrappers: AutocompleteProviderFactory[] = [];
+	private commandPaletteHandle: OverlayHandle | undefined;
 	private fdPath: string | undefined;
 	private editorContainer: Container;
 	private footer: FooterComponent;
@@ -348,8 +393,7 @@ export class InteractiveMode {
 	private workingVisible = true;
 	private workingIndicatorOptions: WorkingIndicatorOptions | undefined = undefined;
 	private readonly defaultWorkingMessage = "Working...";
-	private readonly defaultHiddenThinkingLabel = "Thinking...";
-	private hiddenThinkingLabel = this.defaultHiddenThinkingLabel;
+	private hiddenThinkingLabels = normalizeHiddenThinkingLabels(DEFAULT_HIDDEN_THINKING_LABELS);
 
 	private lastSigintTime = 0;
 	private lastEscapeTime = 0;
@@ -402,6 +446,7 @@ export class InteractiveMode {
 
 	// Shutdown state
 	private shutdownRequested = false;
+	private isSuspended = false;
 
 	// Extension UI state
 	private extensionSelector: ExtensionSelectorComponent | undefined = undefined;
@@ -458,6 +503,9 @@ export class InteractiveMode {
 		this.version = VERSION;
 		this.ui = new TUI(new ProcessTerminal(), this.settingsManager.getShowHardwareCursor(), getAgentDir());
 		this.ui.setClearOnShrink(this.settingsManager.getClearOnShrink());
+		this.ui.setMouseCapture(this.settingsManager.getMouseCapture());
+		this.transcriptContainer = new Container();
+		this.composerContainer = new Container();
 		this.headerContainer = new Container();
 		this.loadedResourcesContainer = new Container();
 		this.chatContainer = new Container();
@@ -473,12 +521,21 @@ export class InteractiveMode {
 			paddingX: editorPaddingX,
 			autocompleteMaxVisible,
 		});
+		this.defaultEditor.onSelection = (text) => {
+			void copyToClipboard(text)
+				.then(() => this.showStatus("Copied selection"))
+				.catch((error: unknown) =>
+					this.showError(`Copy failed: ${error instanceof Error ? error.message : String(error)}`),
+				);
+		};
 		this.editor = this.defaultEditor;
 		this.editorContainer = new Container();
 		this.editorContainer.addChild(this.editor as Component);
 		this.footerDataProvider = new FooterDataProvider(this.sessionManager.getCwd());
 		this.footer = new FooterComponent(this.session, this.footerDataProvider);
 		this.footer.setAutoCompactEnabled(this.session.autoCompactionEnabled);
+		this.defaultEditor.setBottomBorderLabel(() => theme.fg("dim", this.footer.getProjectLabel()));
+		this.footer.setProjectLabelVisible(false);
 
 		// Load hide thinking block setting
 		this.hideThinkingBlock = this.settingsManager.getHideThinkingBlock();
@@ -542,11 +599,13 @@ export class InteractiveMode {
 			}));
 	}
 
-	private createBaseAutocompleteProvider(): AutocompleteProvider {
-		// Define commands for autocomplete
+	private createSlashCommands(): SlashCommand[] {
 		const slashCommands: SlashCommand[] = BUILTIN_SLASH_COMMANDS.map((command) => ({
 			name: command.name,
 			description: command.description,
+			category: command.category,
+			...(command.name === "model" && { shortcut: this.getAppKeyDisplay("app.model.select") }),
+			...(command.name === "copy" && { shortcut: this.getAppKeyDisplay("app.message.copy") }),
 			...(command.argumentHint && { argumentHint: command.argumentHint }),
 		}));
 
@@ -593,6 +652,7 @@ export class InteractiveMode {
 		const templateCommands: SlashCommand[] = this.session.promptTemplates.map((cmd) => ({
 			name: cmd.name,
 			description: this.prefixAutocompleteDescription(cmd.description, cmd.sourceInfo),
+			category: "prompt",
 			...(cmd.argumentHint && { argumentHint: cmd.argumentHint }),
 		}));
 
@@ -600,10 +660,11 @@ export class InteractiveMode {
 		const builtinCommandNames = new Set(slashCommands.map((c) => c.name));
 		const extensionCommands: SlashCommand[] = this.session.extensionRunner
 			.getRegisteredCommands()
-			.filter((cmd) => !builtinCommandNames.has(cmd.name))
+			.filter((cmd) => !builtinCommandNames.has(cmd.invocationName))
 			.map((cmd) => ({
 				name: cmd.invocationName,
 				description: this.prefixAutocompleteDescription(cmd.description, cmd.sourceInfo),
+				category: "extension",
 				getArgumentCompletions: cmd.getArgumentCompletions,
 			}));
 
@@ -617,15 +678,16 @@ export class InteractiveMode {
 				skillCommandList.push({
 					name: commandName,
 					description: this.prefixAutocompleteDescription(skill.description, skill.sourceInfo),
+					category: "skill",
 				});
 			}
 		}
 
-		return new CombinedAutocompleteProvider(
-			[...slashCommands, ...templateCommands, ...extensionCommands, ...skillCommandList],
-			this.sessionManager.getCwd(),
-			this.fdPath,
-		);
+		return [...slashCommands, ...templateCommands, ...extensionCommands, ...skillCommandList];
+	}
+
+	private createBaseAutocompleteProvider(): AutocompleteProvider {
+		return new CombinedAutocompleteProvider(this.createSlashCommands(), this.sessionManager.getCwd(), this.fdPath);
 	}
 
 	private setupAutocompleteProvider(): void {
@@ -676,6 +738,15 @@ export class InteractiveMode {
 		this.chatContainer.addChild(new DynamicBorder());
 	}
 
+	private applyThemeFromSettingsInBackground(): void {
+		void this.themeController.applyFromSettings().catch((error: unknown) => {
+			if (this.isShuttingDown || !this.isInitialized) return;
+			try {
+				this.showError(`Failed to apply theme: ${error instanceof Error ? error.message : String(error)}`);
+			} catch {}
+		});
+	}
+
 	async init(): Promise<void> {
 		if (this.isInitialized) return;
 
@@ -689,7 +760,7 @@ export class InteractiveMode {
 		const [fdPath] = await Promise.all([ensureTool("fd"), ensureTool("rg")]);
 		this.fdPath = fdPath;
 
-		if (this.session.scopedModels.length > 0 && (this.options.verbose || !this.settingsManager.getQuietStartup())) {
+		if (this.session.scopedModels.length > 0 && this.options.verbose) {
 			const modelList = this.session.scopedModels
 				.map((sm) => {
 					const thinkingStr = sm.thinkingLevel ? `:${sm.thinkingLevel}` : "";
@@ -704,19 +775,23 @@ export class InteractiveMode {
 			console.log(theme.fg("dim", `Model scope: ${modelList}${cycleHint}`));
 		}
 
-		// Add header container as first child. Populate it after applying theme settings.
-		// Keep loaded resources before chat so restored session messages never precede them.
-		this.ui.addChild(this.headerContainer);
-		this.ui.addChild(this.loadedResourcesContainer);
+		// Keep the transcript and composer in separate rendering regions. The transcript
+		// scrolls independently while the composer remains anchored to the viewport bottom.
+		this.transcriptContainer.addChild(this.headerContainer);
+		this.transcriptContainer.addChild(this.loadedResourcesContainer);
+		this.transcriptContainer.addChild(this.chatContainer);
+		this.transcriptContainer.addChild(this.pendingMessagesContainer);
 
-		this.ui.addChild(this.chatContainer);
-		this.ui.addChild(this.pendingMessagesContainer);
-		this.ui.addChild(this.statusContainer);
+		this.composerContainer.addChild(this.statusContainer);
 		this.renderWidgets(); // Initialize with default spacer
-		this.ui.addChild(this.widgetContainerAbove);
-		this.ui.addChild(this.editorContainer);
-		this.ui.addChild(this.widgetContainerBelow);
-		this.ui.addChild(this.footer);
+		this.composerContainer.addChild(this.widgetContainerAbove);
+		this.composerContainer.addChild(this.editorContainer);
+		this.composerContainer.addChild(this.widgetContainerBelow);
+		this.composerContainer.addChild(this.footer);
+
+		this.ui.addChild(this.transcriptContainer);
+		this.ui.addChild(this.composerContainer);
+		this.ui.setFixedBottom(this.composerContainer);
 		this.ui.setFocus(this.editor);
 
 		this.setupKeyHandlers();
@@ -726,10 +801,13 @@ export class InteractiveMode {
 		this.ui.start();
 		this.isInitialized = true;
 
-		await this.themeController.applyFromSettings();
+		// Terminal color queries may wait for their timeout in terminals that do not
+		// support them. The environment-derived theme is already active, so refine it
+		// asynchronously instead of blocking the first usable frame.
+		this.applyThemeFromSettingsInBackground();
 
-		// Add header with keybindings from config (unless silenced)
-		if (this.options.verbose || !this.settingsManager.getQuietStartup()) {
+		// Keep normal startup focused; detailed startup output remains available with --verbose.
+		if (this.options.verbose) {
 			const logo = theme.bold(theme.fg("accent", APP_NAME)) + theme.fg("dim", ` v${this.version}`);
 
 			// Build startup instructions using keybinding hint helpers
@@ -783,6 +861,9 @@ export class InteractiveMode {
 			this.headerContainer.addChild(new Spacer(1));
 			this.headerContainer.addChild(this.builtInHeader);
 			this.headerContainer.addChild(new Spacer(1));
+		} else if (!this.settingsManager.getQuietStartup()) {
+			this.builtInHeader = new WelcomeComponent(() => this.ui.terminal.rows);
+			this.headerContainer.addChild(this.builtInHeader);
 		} else {
 			// Minimal header when silenced
 			this.builtInHeader = new Text("", 0, 0);
@@ -1421,12 +1502,15 @@ export class InteractiveMode {
 	private showLoadedResources(options?: {
 		extensions?: Array<{ path: string; sourceInfo?: SourceInfo }>;
 		force?: boolean;
+		suppressListing?: boolean;
 		showDiagnosticsWhenQuiet?: boolean;
 	}): void {
 		// Resource rendering is idempotent; chat clears no longer clear this separate container.
 		this.loadedResourcesContainer.clear();
 
-		const showListing = options?.force || this.options.verbose || !this.settingsManager.getQuietStartup();
+		const showListing =
+			options?.suppressListing !== true &&
+			(options?.force || this.options.verbose || !this.settingsManager.getQuietStartup());
 		const showDiagnostics = showListing || options?.showDiagnosticsWhenQuiet === true;
 		if (!showListing && !showDiagnostics) {
 			return;
@@ -1702,7 +1786,11 @@ export class InteractiveMode {
 
 		const extensionRunner = this.session.extensionRunner;
 		this.setupExtensionShortcuts(extensionRunner);
-		this.showLoadedResources({ force: false, showDiagnosticsWhenQuiet: true });
+		this.showLoadedResources({
+			force: this.toolOutputExpanded,
+			suppressListing: !this.options.verbose && !this.toolOutputExpanded,
+			showDiagnosticsWhenQuiet: true,
+		});
 		this.showStartupNoticesIfNeeded();
 	}
 
@@ -1895,15 +1983,12 @@ export class InteractiveMode {
 		this.ui.requestRender();
 	}
 
-	private setHiddenThinkingLabel(label?: string): void {
-		this.hiddenThinkingLabel = label ?? this.defaultHiddenThinkingLabel;
+	private setHiddenThinkingLabel(labels?: string | HiddenThinkingLabels): void {
+		this.hiddenThinkingLabels = normalizeHiddenThinkingLabels(labels);
 		for (const child of this.chatContainer.children) {
 			if (child instanceof AssistantMessageComponent) {
-				child.setHiddenThinkingLabel(this.hiddenThinkingLabel);
+				child.setHiddenThinkingLabel(this.hiddenThinkingLabels);
 			}
-		}
-		if (this.streamingComponent) {
-			this.streamingComponent.setHiddenThinkingLabel(this.hiddenThinkingLabel);
 		}
 		this.ui.requestRender();
 	}
@@ -1966,6 +2051,7 @@ export class InteractiveMode {
 	}
 
 	private resetExtensionUI(): void {
+		this.closeCommandPalette();
 		if (this.extensionSelector) {
 			this.hideExtensionSelector();
 		}
@@ -2047,21 +2133,21 @@ export class InteractiveMode {
 			this.customFooter.dispose();
 		}
 
-		// Remove current footer from UI
+		// Remove current footer from the fixed composer region.
 		if (this.customFooter) {
-			this.ui.removeChild(this.customFooter);
+			this.composerContainer.removeChild(this.customFooter);
 		} else {
-			this.ui.removeChild(this.footer);
+			this.composerContainer.removeChild(this.footer);
 		}
 
 		if (factory) {
 			// Create and add custom footer, passing the data provider
 			this.customFooter = factory(this.ui, theme, this.footerDataProvider);
-			this.ui.addChild(this.customFooter);
+			this.composerContainer.addChild(this.customFooter);
 		} else {
 			// Restore built-in footer
 			this.customFooter = undefined;
-			this.ui.addChild(this.footer);
+			this.composerContainer.addChild(this.footer);
 		}
 
 		this.ui.requestRender();
@@ -2163,7 +2249,7 @@ export class InteractiveMode {
 			},
 			setWorkingVisible: (visible) => this.setWorkingVisible(visible),
 			setWorkingIndicator: (options) => this.setWorkingIndicator(options),
-			setHiddenThinkingLabel: (label) => this.setHiddenThinkingLabel(label),
+			setHiddenThinkingLabel: (labels) => this.setHiddenThinkingLabel(labels),
 			setWidget: (key, content, options) => this.setExtensionWidget(key, content, options),
 			setFooter: (factory) => this.setExtensionFooter(factory),
 			setHeader: (factory) => this.setExtensionHeader(factory),
@@ -2390,6 +2476,7 @@ export class InteractiveMode {
 			// Wire up callbacks from the default editor
 			newEditor.onSubmit = this.defaultEditor.onSubmit;
 			newEditor.onChange = this.defaultEditor.onChange;
+			newEditor.onSelection = this.defaultEditor.onSelection;
 
 			// Copy text from previous editor
 			newEditor.setText(currentText);
@@ -2401,6 +2488,9 @@ export class InteractiveMode {
 			if (newEditor.setPaddingX !== undefined) {
 				newEditor.setPaddingX(this.defaultEditor.getPaddingX());
 			}
+			const projectLabelOnBorder =
+				newEditor.setBottomBorderLabel?.(() => theme.fg("dim", this.footer.getProjectLabel())) ?? false;
+			this.footer.setProjectLabelVisible(!projectLabelOnBorder);
 
 			// Set autocomplete if supported
 			if (newEditor.setAutocompleteProvider && this.autocompleteProvider) {
@@ -2411,6 +2501,9 @@ export class InteractiveMode {
 			// Use duck typing since instanceof fails across jiti module boundaries
 			const customEditor = newEditor as unknown as Record<string, unknown>;
 			if ("actionHandlers" in customEditor && customEditor.actionHandlers instanceof Map) {
+				if ("onCommandPalette" in customEditor) {
+					customEditor.onCommandPalette = () => this.defaultEditor.onCommandPalette?.() ?? false;
+				}
 				if (!customEditor.onEscape) {
 					customEditor.onEscape = () => this.defaultEditor.onEscape?.();
 				}
@@ -2434,6 +2527,7 @@ export class InteractiveMode {
 			// Restore default editor with text from custom editor
 			this.defaultEditor.setText(currentText);
 			this.editor = this.defaultEditor;
+			this.footer.setProjectLabelVisible(false);
 		}
 
 		this.editorContainer.addChild(this.editor as Component);
@@ -2610,6 +2704,7 @@ export class InteractiveMode {
 		this.defaultEditor.onAction("app.session.tree", () => this.showTreeSelector());
 		this.defaultEditor.onAction("app.session.fork", () => this.showUserMessageSelector());
 		this.defaultEditor.onAction("app.session.resume", () => this.showSessionSelector());
+		this.defaultEditor.onCommandPalette = () => this.showCommandPalette();
 
 		this.defaultEditor.onChange = (text: string) => {
 			const wasBashMode = this.isBashMode;
@@ -2624,6 +2719,42 @@ export class InteractiveMode {
 		this.defaultEditor.onPasteImage = () => {
 			void this.handleClipboardPaste();
 		};
+	}
+
+	private showCommandPalette(): boolean {
+		if (this.commandPaletteHandle || this.editor.getText().length > 0) return false;
+
+		const palette = new CommandPaletteComponent(this.createSlashCommands(), {
+			maxVisible: () => Math.max(1, Math.min(12, Math.floor(this.ui.terminal.rows * 0.7) - 7)),
+			onSubmit: (command) => {
+				this.closeCommandPalette();
+				this.editor.setText("");
+				this.editor.onSubmit?.(`/${command.name}`);
+			},
+			onComplete: (text) => {
+				this.closeCommandPalette();
+				this.editor.setText(text);
+				this.ui.requestRender();
+			},
+			onCancel: () => {
+				this.closeCommandPalette();
+				this.ui.requestRender();
+			},
+		});
+		this.commandPaletteHandle = this.ui.showOverlay(palette, {
+			anchor: "center",
+			width: "80%",
+			minWidth: 40,
+			maxHeight: "70%",
+			margin: 1,
+		});
+		return true;
+	}
+
+	private closeCommandPalette(): void {
+		const handle = this.commandPaletteHandle;
+		this.commandPaletteHandle = undefined;
+		handle?.hide();
 	}
 
 	private async handleClipboardPaste(): Promise<void> {
@@ -2915,12 +3046,12 @@ export class InteractiveMode {
 						undefined,
 						this.hideThinkingBlock,
 						this.getMarkdownThemeWithSettings(),
-						this.hiddenThinkingLabel,
+						this.hiddenThinkingLabels,
 						this.outputPad,
 					);
 					this.streamingMessage = event.message;
 					this.chatContainer.addChild(this.streamingComponent);
-					this.streamingComponent.updateContent(this.streamingMessage);
+					this.streamingComponent.updateContent(this.streamingMessage, true);
 					this.ui.requestRender();
 				}
 				break;
@@ -2928,7 +3059,7 @@ export class InteractiveMode {
 			case "message_update":
 				if (this.streamingComponent && event.message.role === "assistant") {
 					this.streamingMessage = event.message;
-					this.streamingComponent.updateContent(this.streamingMessage);
+					this.streamingComponent.updateContent(this.streamingMessage, true);
 
 					for (const content of this.streamingMessage.content) {
 						if (content.type === "toolCall") {
@@ -2973,7 +3104,7 @@ export class InteractiveMode {
 								: "Operation aborted";
 						this.streamingMessage.errorMessage = errorMessage;
 					}
-					this.streamingComponent.updateContent(this.streamingMessage);
+					this.streamingComponent.updateContent(this.streamingMessage, false);
 
 					if (this.streamingMessage.stopReason === "aborted" || this.streamingMessage.stopReason === "error") {
 						if (!errorMessage) {
@@ -3321,7 +3452,7 @@ export class InteractiveMode {
 					message,
 					this.hideThinkingBlock,
 					this.getMarkdownThemeWithSettings(),
-					this.hiddenThinkingLabel,
+					this.hiddenThinkingLabels,
 					this.outputPad,
 				);
 				this.chatContainer.addChild(assistantComponent);
@@ -3555,22 +3686,26 @@ export class InteractiveMode {
 	private async shutdown(options?: { fromSignal?: boolean }): Promise<void> {
 		if (this.isShuttingDown) return;
 		this.isShuttingDown = true;
+		this.themeController.cancelPendingApply();
 		// Keep signal handlers registered until terminal cleanup has completed.
 		// `signal-exit` checks the listener list during the same SIGTERM/SIGHUP
 		// dispatch and re-sends the signal if only its own listeners remain.
 
 		if (options?.fromSignal) {
-			// Signal-triggered shutdown (SIGTERM/SIGHUP). Emit extension cleanup
+			// Signal-triggered shutdown (SIGINT/SIGTERM/SIGHUP). Emit extension cleanup
 			// (session_shutdown) BEFORE touching the terminal. Extension teardown
 			// such as removing sockets does not write to the tty, so it must not be
 			// skipped if a later terminal-restore write fails on a dead or stalled
 			// terminal. If the terminal is gone, the restore writes below emit EIO,
 			// which the stdout/stderr error handler turns into emergencyTerminalExit;
 			// the render loop is already idle, so this cannot hot-spin (see #4144).
-			await this.runtimeHost.dispose();
-			this.themeController.disableAutoSync();
-			await this.ui.terminal.drainInput(1000);
-			this.stop();
+			try {
+				await this.runtimeHost.dispose();
+				this.themeController.disableAutoSync();
+				await this.ui.terminal.drainInput(1000);
+			} finally {
+				this.stop();
+			}
 			process.exit(0);
 		}
 
@@ -3580,9 +3715,11 @@ export class InteractiveMode {
 		// Drain any in-flight Kitty key release events before stopping.
 		// This prevents escape sequences from leaking to the parent shell over slow SSH.
 		this.themeController.disableAutoSync();
-		await this.ui.terminal.drainInput(1000);
-
-		this.stop();
+		try {
+			await this.ui.terminal.drainInput(1000);
+		} finally {
+			this.stop();
+		}
 		await this.runtimeHost.dispose();
 
 		const resumeCommand = formatResumeCommand(this.sessionManager);
@@ -3615,6 +3752,9 @@ export class InteractiveMode {
 	 */
 	private uncaughtCrash(error: Error): never {
 		if (this.isShuttingDown) {
+			try {
+				this.ui.stop();
+			} catch {}
 			process.exit(1);
 		}
 		this.isShuttingDown = true;
@@ -3643,13 +3783,14 @@ export class InteractiveMode {
 	private registerSignalHandlers(): void {
 		this.unregisterSignalHandlers();
 
-		const signals: NodeJS.Signals[] = ["SIGTERM"];
+		const signals: NodeJS.Signals[] = ["SIGINT", "SIGTERM"];
 		if (process.platform !== "win32") {
 			signals.push("SIGHUP");
 		}
 
 		for (const signal of signals) {
 			const handler = () => {
+				if (signal === "SIGINT" && this.isSuspended) return;
 				// SIGHUP no longer hard-exits: graceful shutdown emits session_shutdown
 				// first, then attempts terminal restore. A genuinely dead terminal
 				// surfaces as an EIO on the restore writes, which the stdout/stderr
@@ -3700,6 +3841,7 @@ export class InteractiveMode {
 
 		// Ignore SIGINT while suspended so Ctrl+C in the terminal does not
 		// kill the backgrounded process. The handler is removed on resume.
+		this.isSuspended = true;
 		const ignoreSigint = () => {};
 		process.on("SIGINT", ignoreSigint);
 
@@ -3707,6 +3849,7 @@ export class InteractiveMode {
 		process.once("SIGCONT", () => {
 			clearInterval(suspendKeepAlive);
 			process.removeListener("SIGINT", ignoreSigint);
+			this.isSuspended = false;
 			this.ui.start();
 			this.ui.requestRender(true);
 		});
@@ -3720,6 +3863,7 @@ export class InteractiveMode {
 		} catch (error) {
 			clearInterval(suspendKeepAlive);
 			process.removeListener("SIGINT", ignoreSigint);
+			this.isSuspended = false;
 			throw error;
 		}
 	}
@@ -3782,7 +3926,6 @@ export class InteractiveMode {
 		} else {
 			this.footer.invalidate();
 			this.updateEditorBorderColor();
-			this.showStatus(`Thinking level: ${newLevel}`);
 		}
 	}
 
@@ -3811,6 +3954,11 @@ export class InteractiveMode {
 
 	private setToolsExpanded(expanded: boolean): void {
 		this.toolOutputExpanded = expanded;
+		this.showLoadedResources({
+			force: expanded,
+			suppressListing: !this.options.verbose && !expanded,
+			showDiagnosticsWhenQuiet: true,
+		});
 		const activeHeader = this.customHeader ?? this.builtInHeader;
 		if (isExpandable(activeHeader)) {
 			activeHeader.setExpanded(expanded);
@@ -3829,15 +3977,10 @@ export class InteractiveMode {
 		this.hideThinkingBlock = !this.hideThinkingBlock;
 		this.settingsManager.setHideThinkingBlock(this.hideThinkingBlock);
 
-		// Rebuild chat from session messages
-		this.chatContainer.clear();
-		this.rebuildChatFromMessages();
-
-		// If streaming, re-add the streaming component with updated visibility and re-render
-		if (this.streamingComponent && this.streamingMessage) {
-			this.streamingComponent.setHideThinkingBlock(this.hideThinkingBlock);
-			this.streamingComponent.updateContent(this.streamingMessage);
-			this.chatContainer.addChild(this.streamingComponent);
+		for (const child of this.chatContainer.children) {
+			if (child instanceof AssistantMessageComponent) {
+				child.setHideThinkingBlock(this.hideThinkingBlock);
+			}
 		}
 
 		this.showStatus(`Thinking blocks: ${this.hideThinkingBlock ? "hidden" : "visible"}`);
@@ -4220,7 +4363,7 @@ export class InteractiveMode {
 					},
 					onThemeChange: (themeSetting) => {
 						this.settingsManager.setTheme(themeSetting);
-						void this.themeController.applyFromSettings();
+						this.applyThemeFromSettingsInBackground();
 					},
 					onThemePreview: (themeName) => this.themeController.preview(themeName),
 					onHideThinkingBlockChange: (hidden) => {
@@ -5396,7 +5539,8 @@ export class InteractiveMode {
 			const runner = this.session.extensionRunner;
 			this.setupExtensionShortcuts(runner);
 			this.showLoadedResources({
-				force: false,
+				force: this.toolOutputExpanded,
+				suppressListing: !this.options.verbose && !this.toolOutputExpanded,
 				showDiagnosticsWhenQuiet: true,
 			});
 			const savedImplicitProjectTrust = this.maybeSaveImplicitProjectTrustAfterReload();
@@ -5848,11 +5992,9 @@ export class InteractiveMode {
 		}
 
 		this.chatContainer.addChild(new Spacer(1));
-		this.chatContainer.addChild(new DynamicBorder());
 		this.chatContainer.addChild(new Text(theme.bold(theme.fg("accent", "Keyboard Shortcuts")), 1, 0));
 		this.chatContainer.addChild(new Spacer(1));
 		this.chatContainer.addChild(new Markdown(hotkeys.trim(), 1, 1, this.getMarkdownThemeWithSettings()));
-		this.chatContainer.addChild(new DynamicBorder());
 		this.ui.requestRender();
 	}
 
@@ -6026,21 +6168,27 @@ export class InteractiveMode {
 	}
 
 	stop(): void {
-		if (this.settingsManager.getShowTerminalProgress()) {
-			this.ui.terminal.setProgress(false);
+		try {
+			if (this.settingsManager.getShowTerminalProgress()) {
+				this.ui.terminal.setProgress(false);
+			}
+			this.clearStatusIndicator();
+			this.themeController.disableAutoSync();
+			this.clearExtensionTerminalInputListeners();
+			this.footer.dispose();
+			this.footerDataProvider.dispose();
+			if (this.unsubscribe) {
+				this.unsubscribe();
+			}
+		} finally {
+			try {
+				if (this.isInitialized) {
+					this.ui.stop();
+				}
+			} finally {
+				this.isInitialized = false;
+				this.unregisterSignalHandlers();
+			}
 		}
-		this.clearStatusIndicator();
-		this.themeController.disableAutoSync();
-		this.clearExtensionTerminalInputListeners();
-		this.footer.dispose();
-		this.footerDataProvider.dispose();
-		if (this.unsubscribe) {
-			this.unsubscribe();
-		}
-		if (this.isInitialized) {
-			this.ui.stop();
-			this.isInitialized = false;
-		}
-		this.unregisterSignalHandlers();
 	}
 }

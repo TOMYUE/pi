@@ -42,3 +42,7 @@ plans/
 .pi/hf-sessions/
 .pi/hf-sessions-backup/
 collect.sh
+
+# Local dev pi (isolated agent dir; may contain secrets)
+.pi-dev/
+dev-pi.local.sh

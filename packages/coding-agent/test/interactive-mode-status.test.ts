@@ -1,13 +1,14 @@
 import { homedir } from "node:os";
 import * as path from "node:path";
-import { type AutocompleteProvider, CombinedAutocompleteProvider } from "@earendil-works/pi-tui";
+import { type AutocompleteProvider, CombinedAutocompleteProvider, type SlashCommand } from "@earendil-works/pi-tui";
 import { beforeAll, describe, expect, test, vi } from "vitest";
 import { type Component, Container, type Focusable, TUI } from "../../tui/src/tui.ts";
 import { VirtualTerminal } from "../../tui/test/virtual-terminal.ts";
 import type { AutocompleteProviderFactory } from "../src/core/extensions/types.ts";
 import type { SourceInfo } from "../src/core/source-info.ts";
+import { AssistantMessageComponent } from "../src/modes/interactive/components/assistant-message.ts";
 import type { AuthSelectorProvider } from "../src/modes/interactive/components/oauth-selector.ts";
-import { InteractiveMode } from "../src/modes/interactive/interactive-mode.ts";
+import { InteractiveMode, WelcomeComponent } from "../src/modes/interactive/interactive-mode.ts";
 import { initTheme } from "../src/modes/interactive/theme/theme.ts";
 
 function renderLastLine(container: Container, width = 120): string {
@@ -128,16 +129,125 @@ describe("InteractiveMode.setToolsExpanded", () => {
 			builtInHeader: header,
 			loadedResourcesContainer: { children: [loadedResourcesChild] },
 			chatContainer: { children: [chatChild] },
+			options: { verbose: false },
+			showLoadedResources: vi.fn(),
 			ui: { requestRender: vi.fn() },
 		};
 
 		(InteractiveMode as any).prototype.setToolsExpanded.call(fakeThis, true);
 
 		expect(fakeThis.toolOutputExpanded).toBe(true);
+		expect(fakeThis.showLoadedResources).toHaveBeenCalledWith({
+			force: true,
+			suppressListing: false,
+			showDiagnosticsWhenQuiet: true,
+		});
 		expect(header.setExpanded).toHaveBeenCalledWith(true);
 		expect(loadedResourcesChild.setExpanded).toHaveBeenCalledWith(true);
 		expect(chatChild.setExpanded).toHaveBeenCalledWith(true);
 		expect(fakeThis.ui.requestRender).toHaveBeenCalledTimes(1);
+	});
+});
+
+describe("InteractiveMode.toggleThinkingBlockVisibility", () => {
+	test("updates existing assistant components without rebuilding tool entries", () => {
+		const assistant = new AssistantMessageComponent();
+		const setHidden = vi.spyOn(assistant, "setHideThinkingBlock");
+		const toolEntry = { render: () => ["tool"], invalidate: () => {} };
+		const chatContainer = new Container();
+		chatContainer.addChild(assistant);
+		chatContainer.addChild(toolEntry);
+		const fakeThis: any = {
+			hideThinkingBlock: false,
+			settingsManager: { setHideThinkingBlock: vi.fn() },
+			chatContainer,
+			showStatus: vi.fn(),
+		};
+
+		(InteractiveMode as any).prototype.toggleThinkingBlockVisibility.call(fakeThis);
+
+		expect(fakeThis.hideThinkingBlock).toBe(true);
+		expect(fakeThis.settingsManager.setHideThinkingBlock).toHaveBeenCalledWith(true);
+		expect(setHidden).toHaveBeenCalledWith(true);
+		expect(chatContainer.children).toEqual([assistant, toolEntry]);
+		expect(fakeThis.showStatus).toHaveBeenCalledWith("Thinking blocks: hidden");
+	});
+});
+
+describe("InteractiveMode.setHiddenThinkingLabel", () => {
+	test("updates active and completed messages once and preserves pair semantics", () => {
+		const completed = new AssistantMessageComponent();
+		const streaming = new AssistantMessageComponent();
+		const completedSetter = vi.spyOn(completed, "setHiddenThinkingLabel");
+		const streamingSetter = vi.spyOn(streaming, "setHiddenThinkingLabel");
+		const labels = { active: "Asking Oracle...", complete: "Oracle has spoken" };
+		const fakeThis: any = {
+			hiddenThinkingLabels: { active: "Thinking...", complete: "Thought" },
+			chatContainer: { children: [completed, streaming] },
+			streamingComponent: streaming,
+			ui: { requestRender: vi.fn() },
+		};
+
+		(InteractiveMode as any).prototype.setHiddenThinkingLabel.call(fakeThis, labels);
+
+		expect(fakeThis.hiddenThinkingLabels).toEqual(labels);
+		expect(fakeThis.hiddenThinkingLabels).not.toBe(labels);
+		expect(completedSetter).toHaveBeenCalledOnce();
+		expect(streamingSetter).toHaveBeenCalledOnce();
+		expect(completedSetter).toHaveBeenCalledWith(labels);
+		expect(streamingSetter).toHaveBeenCalledWith(labels);
+		expect(fakeThis.ui.requestRender).toHaveBeenCalledOnce();
+	});
+});
+
+describe("InteractiveMode.cycleThinkingLevel", () => {
+	test("updates the footer and editor border without appending success status", () => {
+		const fakeThis = {
+			session: { cycleThinkingLevel: vi.fn((): string | undefined => "high") },
+			footer: { invalidate: vi.fn() },
+			updateEditorBorderColor: vi.fn(),
+			showStatus: vi.fn(),
+		};
+
+		(InteractiveMode as any).prototype.cycleThinkingLevel.call(fakeThis);
+
+		expect(fakeThis.footer.invalidate).toHaveBeenCalledTimes(1);
+		expect(fakeThis.updateEditorBorderColor).toHaveBeenCalledTimes(1);
+		expect(fakeThis.showStatus).not.toHaveBeenCalled();
+
+		fakeThis.session.cycleThinkingLevel.mockReturnValue(undefined);
+		(InteractiveMode as any).prototype.cycleThinkingLevel.call(fakeThis);
+		expect(fakeThis.showStatus).toHaveBeenCalledWith("Current model does not support thinking");
+	});
+});
+
+describe("WelcomeComponent", () => {
+	beforeAll(() => {
+		initTheme("dark");
+	});
+
+	test.each([
+		{ rows: 8, expectedLines: 1 },
+		{ rows: 9, expectedLines: 2 },
+		{ rows: 10, expectedLines: 3 },
+	])("keeps the welcome visible in a $rows-row terminal", ({ rows, expectedLines }) => {
+		const lines = new WelcomeComponent(() => rows).render(20);
+		expect(lines).toHaveLength(expectedLines);
+		expect(lines[0]).toContain("Welcome to Pi");
+		for (const line of lines) expect(line.replaceAll(/\x1b\[[0-9;]*m/g, "").length).toBeLessThanOrEqual(20);
+	});
+
+	test("centers the welcome block without a logo in a normal terminal", () => {
+		const lines = new WelcomeComponent(() => 35).render(80);
+		const visibleLines = lines.map((line) => line.replaceAll(/\x1b\[[0-9;]*m/g, ""));
+		const nonEmptyLines = visibleLines.filter((line) => line.trim());
+		expect(nonEmptyLines.map((line) => line.trim())).toEqual([
+			"Welcome to Pi",
+			"/ for commands",
+			"/hotkeys for shortcuts",
+		]);
+		expect(visibleLines.some((line) => line.includes("█"))).toBe(false);
+		expect(visibleLines.findIndex((line) => line.includes("Welcome to Pi"))).toBe(15);
 	});
 });
 
@@ -388,13 +498,14 @@ describe("InteractiveMode.createBaseAutocompleteProvider", () => {
 			skillCommands: Map<string, string>;
 			sessionManager: { getCwd: () => string };
 			fdPath: null;
+			getAppKeyDisplay: () => string;
 		};
 
-		const createBaseAutocompleteProvider = (
+		const createSlashCommands = (
 			InteractiveMode as unknown as {
-				prototype: { createBaseAutocompleteProvider(this: FakeInteractiveMode): AutocompleteProvider };
+				prototype: { createSlashCommands(this: FakeInteractiveMode): SlashCommand[] };
 			}
-		).prototype.createBaseAutocompleteProvider;
+		).prototype.createSlashCommands;
 		const models = [
 			{ id: "gpt-5.2-codex", provider: "github-copilot", name: "GPT-5.2 Codex" },
 			{ id: "gpt-5.5", provider: "openai-codex", name: "GPT-5.5" },
@@ -411,9 +522,10 @@ describe("InteractiveMode.createBaseAutocompleteProvider", () => {
 			skillCommands: new Map(),
 			sessionManager: { getCwd: () => "/tmp" },
 			fdPath: null,
+			getAppKeyDisplay: () => "ctrl+l",
 		};
 
-		const provider = createBaseAutocompleteProvider.call(fakeThis);
+		const provider = new CombinedAutocompleteProvider(createSlashCommands.call(fakeThis), "/tmp", undefined);
 		const line = "/model codexgpt";
 		const suggestions = await provider.getSuggestions([line], 0, line.length, {
 			signal: new AbortController().signal,
@@ -439,13 +551,14 @@ describe("InteractiveMode.createBaseAutocompleteProvider", () => {
 			sessionManager: { getCwd: () => string };
 			fdPath: null;
 			getLoginProviderOptions: () => AuthSelectorProvider[];
+			getAppKeyDisplay: () => string;
 		};
 
-		const createBaseAutocompleteProvider = (
+		const createSlashCommands = (
 			InteractiveMode as unknown as {
-				prototype: { createBaseAutocompleteProvider(this: FakeInteractiveMode): AutocompleteProvider };
+				prototype: { createSlashCommands(this: FakeInteractiveMode): SlashCommand[] };
 			}
-		).prototype.createBaseAutocompleteProvider;
+		).prototype.createSlashCommands;
 		const fakeThis: FakeInteractiveMode = {
 			session: {
 				scopedModels: [],
@@ -458,6 +571,7 @@ describe("InteractiveMode.createBaseAutocompleteProvider", () => {
 			skillCommands: new Map(),
 			sessionManager: { getCwd: () => "/tmp" },
 			fdPath: null,
+			getAppKeyDisplay: () => "ctrl+l",
 			getLoginProviderOptions: () => [
 				{ id: "anthropic", name: "Anthropic", authType: "oauth" },
 				{ id: "anthropic", name: "Anthropic", authType: "api_key" },
@@ -465,7 +579,7 @@ describe("InteractiveMode.createBaseAutocompleteProvider", () => {
 			],
 		};
 
-		const provider = createBaseAutocompleteProvider.call(fakeThis);
+		const provider = new CombinedAutocompleteProvider(createSlashCommands.call(fakeThis), "/tmp", undefined);
 		const line = "/login subscription anthrop";
 		const suggestions = await provider.getSuggestions([line], 0, line.length, {
 			signal: new AbortController().signal,
@@ -682,6 +796,42 @@ describe("InteractiveMode.showLoadedResources", () => {
 		expect(output).toContain("[Skills]");
 		expect(output).toContain("commit");
 		expect(output).not.toContain("resource-list");
+	});
+
+	test("suppresses the normal startup resource listing while preserving diagnostics", () => {
+		const fakeThis = createShowLoadedResourcesThis({
+			quietStartup: false,
+			skills: [{ filePath: "/tmp/skill/SKILL.md", name: "commit" }],
+			skillDiagnostics: [{ type: "warning", message: "Duplicate skill" }],
+		});
+
+		(InteractiveMode as any).prototype.showLoadedResources.call(fakeThis, {
+			force: false,
+			suppressListing: true,
+			showDiagnosticsWhenQuiet: true,
+		});
+
+		const output = renderAll(fakeThis.loadedResourcesContainer);
+		expect(output).not.toContain("[Skills]");
+		expect(output).not.toContain("commit");
+		expect(output).toContain("[Skill conflicts]");
+		expect(output).toContain("diagnostics");
+
+		(InteractiveMode as any).prototype.showLoadedResources.call(fakeThis, {
+			force: true,
+			suppressListing: false,
+			showDiagnosticsWhenQuiet: true,
+		});
+		expect(renderAll(fakeThis.loadedResourcesContainer)).toContain("[Skills]");
+
+		(InteractiveMode as any).prototype.showLoadedResources.call(fakeThis, {
+			force: false,
+			suppressListing: true,
+			showDiagnosticsWhenQuiet: true,
+		});
+		const collapsedOutput = renderAll(fakeThis.loadedResourcesContainer);
+		expect(collapsedOutput).not.toContain("[Skills]");
+		expect(collapsedOutput).toContain("[Skill conflicts]");
 	});
 
 	test("shows full resource listing when expanded", () => {

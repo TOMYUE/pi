@@ -2,6 +2,22 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Changed the interactive TUI to keep the composer fixed at the bottom while the transcript streams and scrolls independently.
+- Changed slash-command selection to use a searchable pop-out command palette while preserving command arguments and autocomplete.
+- Changed normal interactive startup to show a centered welcome with command and shortcut discovery instead of listing every loaded resource.
+- Changed foldable thinking blocks to distinguish active and completed labels, including extension-defined label pairs.
+- Changed foldable tool rows to show active, completed, and failed lifecycle labels, including extension-defined labels.
+- Changed the composer to place the project and branch label across its bottom-right border.
+
+### Fixed
+
+- Fixed customized builds advertising upstream Pi updates that could replace their local changes.
+- Fixed model registry reloads unexpectedly fetching remote catalogs instead of only reloading local model configuration.
+- Fixed direct bash execution returning before truncated full-output files were completely written.
+- Fixed mouse-wheel transcript scrolling being unavailable by default in the fullscreen fixed-composer interface.
+
 ## [0.82.1] - 2026-07-25
 
 ### New Features

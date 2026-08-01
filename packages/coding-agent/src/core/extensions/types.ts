@@ -119,6 +119,12 @@ export interface WorkingIndicatorOptions {
 	intervalMs?: number;
 }
 
+/** Labels for a foldable thinking block while it is active and after it completes. */
+export interface HiddenThinkingLabels {
+	readonly active: string;
+	readonly complete: string;
+}
+
 /** Wrap the current autocomplete provider with additional behavior. */
 export type AutocompleteProviderFactory = (current: AutocompleteProvider) => AutocompleteProvider;
 export type EditorFactory = (tui: TUI, theme: EditorTheme, keybindings: KeybindingsManager) => EditorComponent;
@@ -162,8 +168,14 @@ export interface ExtensionUIContext {
 	 */
 	setWorkingIndicator(options?: WorkingIndicatorOptions): void;
 
-	/** Set the label shown for hidden thinking blocks. Call with no argument to restore default. */
-	setHiddenThinkingLabel(label?: string): void;
+	/**
+	 * Set labels for foldable thinking blocks. A string uses the same label while active and complete.
+	 * Call with no argument to restore `Thinking...` while active and `Thought` when complete.
+	 *
+	 * @example
+	 * ctx.ui.setHiddenThinkingLabel({ active: "Asking Oracle...", complete: "Oracle has spoken" });
+	 */
+	setHiddenThinkingLabel(labels?: string | HiddenThinkingLabels): void;
 
 	/** Set a widget to display above or below the editor. Accepts string array or component factory. */
 	setWidget(key: string, content: string[] | undefined, options?: ExtensionWidgetOptions): void;
@@ -440,11 +452,22 @@ export interface ToolRenderContext<TState = any, TArgs = any> {
 /**
  * Tool definition for registerTool().
  */
+export interface ToolLifecycleLabels {
+	/** Label shown while the tool is running. */
+	active: string;
+	/** Label shown after the tool completes successfully. */
+	complete: string;
+	/** Label shown after the tool fails. */
+	error?: string;
+}
+
 export interface ToolDefinition<TParams extends TSchema = TSchema, TDetails = unknown, TState = any> {
 	/** Tool name (used in LLM tool calls) */
 	name: string;
 	/** Human-readable label for UI */
 	label: string;
+	/** Optional active/completed labels for the foldable tool row. */
+	lifecycle?: ToolLifecycleLabels;
 	/** Description for LLM */
 	description: string;
 	/** Optional one-line snippet for the Available tools section in the default system prompt. Custom tools are omitted from that section when this is not provided. */

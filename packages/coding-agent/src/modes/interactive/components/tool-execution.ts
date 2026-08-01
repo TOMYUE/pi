@@ -1,7 +1,21 @@
-import { Box, type Component, Container, getCapabilities, Image, Spacer, Text, type TUI } from "@earendil-works/pi-tui";
-import type { ToolDefinition, ToolRenderContext } from "../../../core/extensions/types.ts";
+import {
+	Box,
+	type Component,
+	Container,
+	getCapabilities,
+	Image,
+	Spacer,
+	sliceByColumn,
+	Text,
+	type TUI,
+	type TuiMouseEvent,
+	truncateToWidth,
+	visibleWidth,
+} from "@earendil-works/pi-tui";
+import type { ToolDefinition, ToolLifecycleLabels, ToolRenderContext } from "../../../core/extensions/types.ts";
 import { createAllToolDefinitions, type ToolName } from "../../../core/tools/index.ts";
 import { getTextOutput as getRenderedTextOutput } from "../../../core/tools/render-utils.ts";
+import { stripAnsi } from "../../../utils/ansi.ts";
 import { convertToPng } from "../../../utils/image-convert.ts";
 import { theme } from "../theme/theme.ts";
 
@@ -10,12 +24,61 @@ export interface ToolExecutionOptions {
 	imageWidthCells?: number;
 }
 
+class ToolDisclosureComponent implements Component {
+	private readonly component: Component;
+	private readonly isExpanded: () => boolean;
+	private readonly getStatusLabel: () => string;
+	private readonly toolLabelPattern: string;
+
+	constructor(component: Component, isExpanded: () => boolean, getStatusLabel: () => string, toolLabels: string[]) {
+		this.component = component;
+		this.isExpanded = isExpanded;
+		this.getStatusLabel = getStatusLabel;
+		this.toolLabelPattern = [...new Set(toolLabels)]
+			.sort((a, b) => b.length - a.length)
+			.map((label) => label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
+			.join("|");
+	}
+
+	render(width: number): string[] {
+		const contentWidth = Math.max(1, width - 4);
+		const lines = this.component.render(contentWidth);
+		const headerRow = lines.findIndex((line) => stripAnsi(line).trim().length > 0);
+		if (headerRow < 0) return [];
+
+		const disclosure = this.isExpanded() ? "▼" : "▶";
+		const trailingSpaces = stripAnsi(lines[headerRow]).match(/\s+$/)?.[0].length ?? 0;
+		const callSummary = truncateToWidth(
+			lines[headerRow],
+			Math.max(1, visibleWidth(lines[headerRow]) - trailingSpaces),
+			"",
+		);
+		const toolLabelMatch = stripAnsi(callSummary).match(
+			new RegExp(`^\\s*(?:${this.toolLabelPattern})(?:\\s+|$)`, "i"),
+		);
+		const removedWidth = toolLabelMatch ? visibleWidth(toolLabelMatch[0]) : 0;
+		const details = sliceByColumn(callSummary, removedWidth, visibleWidth(callSummary) - removedWidth);
+		const header = truncateToWidth(
+			`${theme.fg("toolTitle", disclosure)} ${this.getStatusLabel()}${details ? ` ${details}` : ""}`,
+			width,
+			"",
+		);
+		if (!this.isExpanded()) return [header];
+		return [...lines.slice(0, headerRow), header, ...lines.slice(headerRow + 1)];
+	}
+
+	invalidate(): void {
+		this.component.invalidate?.();
+	}
+}
+
 export class ToolExecutionComponent extends Container {
 	private contentBox: Box;
 	private contentText: Text;
 	private selfRenderContainer: Container;
 	private callRendererComponent?: Component;
 	private resultRendererComponent?: Component;
+	private callDisclosureComponent?: ToolDisclosureComponent;
 	private rendererState: any = {};
 	private imageComponents: Image[] = [];
 	private imageSpacers: Spacer[] = [];
@@ -39,6 +102,7 @@ export class ToolExecutionComponent extends Container {
 	};
 	private convertedImages: Map<number, { data: string; mimeType: string }> = new Map();
 	private hideComponent = false;
+	private toggleRow = -1;
 
 	constructor(
 		toolName: string,
@@ -65,8 +129,8 @@ export class ToolExecutionComponent extends Container {
 		// Always create all shell variants. contentBox is used for default renderer-based composition.
 		// selfRenderContainer is used when the tool renders its own framing.
 		// contentText is reserved for generic fallback rendering when no tool definition exists.
-		this.contentBox = new Box(1, 1, (text: string) => theme.bg("toolPendingBg", text));
-		this.contentText = new Text("", 1, 1, (text: string) => theme.bg("toolPendingBg", text));
+		this.contentBox = new Box(1, 0);
+		this.contentText = new Text("", 1, 0);
 		this.selfRenderContainer = new Container();
 
 		if (this.hasRendererDefinition()) {
@@ -133,7 +197,7 @@ export class ToolExecutionComponent extends Container {
 	}
 
 	private createCallFallback(): Component {
-		return new Text(theme.fg("toolTitle", theme.bold(this.toolName)), 0, 0);
+		return new Text(theme.fg("toolTitle", theme.bold(this.getToolLabel())), 0, 0);
 	}
 
 	private createResultFallback(): Component | undefined {
@@ -142,6 +206,32 @@ export class ToolExecutionComponent extends Container {
 			return undefined;
 		}
 		return new Text(theme.fg("toolOutput", output), 0, 0);
+	}
+
+	private getToolLabel(): string {
+		return this.toolDefinition?.label || this.builtInToolDefinition?.label || this.toolName;
+	}
+
+	private getToolLabels(): string[] {
+		return [this.getToolLabel(), this.toolName];
+	}
+
+	private getLifecycleLabels(): ToolLifecycleLabels {
+		const lifecycle = this.toolDefinition?.lifecycle ?? this.builtInToolDefinition?.lifecycle;
+		if (lifecycle) return lifecycle;
+		const label = this.getToolLabel();
+		return {
+			active: `Running ${label}...`,
+			complete: `Completed ${label}`,
+			error: `Failed ${label}`,
+		};
+	}
+
+	private getStatusLabel(): string {
+		const lifecycle = this.getLifecycleLabels();
+		if (this.isPartial) return theme.italic(theme.fg("muted", lifecycle.active));
+		if (this.result?.isError) return theme.fg("error", lifecycle.error ?? `Failed ${this.getToolLabel()}`);
+		return theme.fg("success", lifecycle.complete);
 	}
 
 	updateArgs(args: any): void {
@@ -171,6 +261,9 @@ export class ToolExecutionComponent extends Container {
 	): void {
 		this.result = result;
 		this.isPartial = isPartial;
+		if (result.isError && !isPartial) {
+			this.expanded = true;
+		}
 		this.updateDisplay();
 		this.maybeConvertImagesForKitty();
 	}
@@ -199,8 +292,15 @@ export class ToolExecutionComponent extends Container {
 	}
 
 	setExpanded(expanded: boolean): void {
+		if (this.expanded === expanded) return;
 		this.expanded = expanded;
 		this.updateDisplay();
+	}
+
+	handleMouse(event: TuiMouseEvent): void {
+		if (event.type === "press" && event.button === 0 && event.y === this.toggleRow) {
+			this.setExpanded(!this.expanded);
+		}
 	}
 
 	setShowImages(show: boolean): void {
@@ -220,16 +320,19 @@ export class ToolExecutionComponent extends Container {
 
 	override render(width: number): string[] {
 		if (this.hideComponent) {
+			this.toggleRow = -1;
 			return [];
 		}
 
+		let lines: string[];
 		if (this.hasRendererDefinition() && this.getRenderShell() === "self") {
 			const contentLines = this.selfRenderContainer.render(width);
 			if (contentLines.length === 0 && this.imageComponents.length === 0) {
+				this.toggleRow = -1;
 				return [];
 			}
 
-			const lines: string[] = [];
+			lines = [];
 			if (contentLines.length > 0) {
 				lines.push("");
 				lines.push(...contentLines);
@@ -244,41 +347,52 @@ export class ToolExecutionComponent extends Container {
 					lines.push(...imageComponent.render(width));
 				}
 			}
-			return lines;
+		} else {
+			lines = super.render(width);
 		}
 
-		return super.render(width);
+		this.toggleRow = lines.findIndex((line) => line.includes("▶") || line.includes("▼"));
+		return lines;
 	}
 
 	private updateDisplay(): void {
-		const bgFn = this.isPartial
-			? (text: string) => theme.bg("toolPendingBg", text)
-			: this.result?.isError
-				? (text: string) => theme.bg("toolErrorBg", text)
-				: (text: string) => theme.bg("toolSuccessBg", text);
-
 		let hasContent = false;
 		this.hideComponent = false;
 		if (this.hasRendererDefinition()) {
 			const renderContainer = this.getRenderShell() === "self" ? this.selfRenderContainer : this.contentBox;
-			if (renderContainer instanceof Box) {
-				renderContainer.setBgFn(bgFn);
-			}
 			renderContainer.clear();
 
 			const callRenderer = this.getCallRenderer();
 			if (!callRenderer) {
-				renderContainer.addChild(this.createCallFallback());
+				this.callDisclosureComponent = new ToolDisclosureComponent(
+					this.createCallFallback(),
+					() => this.expanded,
+					() => this.getStatusLabel(),
+					this.getToolLabels(),
+				);
+				renderContainer.addChild(this.callDisclosureComponent);
 				hasContent = true;
 			} else {
 				try {
 					const component = callRenderer(this.args, theme, this.getRenderContext(this.callRendererComponent));
 					this.callRendererComponent = component;
-					renderContainer.addChild(component);
+					this.callDisclosureComponent = new ToolDisclosureComponent(
+						component,
+						() => this.expanded,
+						() => this.getStatusLabel(),
+						this.getToolLabels(),
+					);
+					renderContainer.addChild(this.callDisclosureComponent);
 					hasContent = true;
 				} catch {
 					this.callRendererComponent = undefined;
-					renderContainer.addChild(this.createCallFallback());
+					this.callDisclosureComponent = new ToolDisclosureComponent(
+						this.createCallFallback(),
+						() => this.expanded,
+						() => this.getStatusLabel(),
+						this.getToolLabels(),
+					);
+					renderContainer.addChild(this.callDisclosureComponent);
 					hasContent = true;
 				}
 			}
@@ -286,10 +400,12 @@ export class ToolExecutionComponent extends Container {
 			if (this.result) {
 				const resultRenderer = this.getResultRenderer();
 				if (!resultRenderer) {
-					const component = this.createResultFallback();
-					if (component) {
-						renderContainer.addChild(component);
-						hasContent = true;
+					if (this.expanded) {
+						const component = this.createResultFallback();
+						if (component) {
+							renderContainer.addChild(component);
+							hasContent = true;
+						}
 					}
 				} else {
 					try {
@@ -300,21 +416,24 @@ export class ToolExecutionComponent extends Container {
 							this.getRenderContext(this.resultRendererComponent),
 						);
 						this.resultRendererComponent = component;
-						renderContainer.addChild(component);
-						hasContent = true;
-					} catch {
-						this.resultRendererComponent = undefined;
-						const component = this.createResultFallback();
-						if (component) {
+						if (this.expanded) {
 							renderContainer.addChild(component);
 							hasContent = true;
+						}
+					} catch {
+						this.resultRendererComponent = undefined;
+						if (this.expanded) {
+							const component = this.createResultFallback();
+							if (component) {
+								renderContainer.addChild(component);
+								hasContent = true;
+							}
 						}
 					}
 				}
 			}
 		} else {
-			this.contentText.setCustomBgFn(bgFn);
-			this.contentText.setText(this.formatToolExecution());
+			this.contentText.setText(this.formatToolExecution(this.expanded));
 			hasContent = true;
 		}
 
@@ -327,7 +446,7 @@ export class ToolExecutionComponent extends Container {
 		}
 		this.imageSpacers = [];
 
-		if (this.result) {
+		if (this.result && this.expanded) {
 			const imageBlocks = this.result.content.filter((c) => c.type === "image");
 			const caps = getCapabilities();
 			for (let i = 0; i < imageBlocks.length; i++) {
@@ -362,8 +481,10 @@ export class ToolExecutionComponent extends Container {
 		return getRenderedTextOutput(this.result, this.showImages);
 	}
 
-	private formatToolExecution(): string {
-		let text = theme.fg("toolTitle", theme.bold(this.toolName));
+	private formatToolExecution(includeDetails: boolean): string {
+		const disclosure = includeDetails ? "▼" : "▶";
+		let text = `${theme.fg("toolTitle", disclosure)} ${this.getStatusLabel()}`;
+		if (!includeDetails) return text;
 		const content = JSON.stringify(this.args, null, 2);
 		if (content) {
 			text += `\n\n${content}`;

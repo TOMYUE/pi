@@ -55,6 +55,20 @@ const getSuggestions = (
 ) => provider.getSuggestions(lines, cursorLine, cursorCol, { signal: new AbortController().signal, force });
 
 describe("CombinedAutocompleteProvider", () => {
+	it("preserves labels from generic autocomplete items", async () => {
+		const provider = new CombinedAutocompleteProvider([{ value: "model", label: "Choose model" }], "/tmp");
+		const result = await getSuggestions(provider, ["/"], 0, 1);
+
+		assert.strictEqual(result?.items[0]?.label, "Choose model");
+	});
+
+	it("returns an empty command result so the palette can show no matches", async () => {
+		const provider = new CombinedAutocompleteProvider([{ name: "model", description: "Select model" }], "/tmp");
+		const result = await getSuggestions(provider, ["/zzz"], 0, 4);
+
+		assert.deepStrictEqual(result, { items: [], prefix: "/zzz" });
+	});
+
 	describe("extractPathPrefix", () => {
 		it("extracts / from 'hey /' when forced", async () => {
 			const provider = new CombinedAutocompleteProvider([], "/tmp");

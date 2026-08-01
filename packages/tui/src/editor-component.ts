@@ -32,6 +32,9 @@ export interface EditorComponent extends Component {
 	/** Called when text changes */
 	onChange?: (text: string) => void;
 
+	/** Called when mouse-selected text is ready to copy */
+	onSelection?: (text: string) => void;
+
 	// =========================================================================
 	// History support (optional)
 	// =========================================================================
@@ -65,6 +68,9 @@ export interface EditorComponent extends Component {
 
 	/** Border color function */
 	borderColor?: (str: string) => string;
+
+	/** Set a dynamic label rendered across the bottom-right border; returns whether this editor supports it */
+	setBottomBorderLabel?(label: (() => string) | undefined): boolean;
 
 	/** Set horizontal padding */
 	setPaddingX?(padding: number): void;

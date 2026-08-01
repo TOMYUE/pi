@@ -127,6 +127,13 @@ describe("FooterComponent width handling", () => {
 		}
 	});
 
+	it("provides the project, branch, and session label for the editor border", () => {
+		const footer = new FooterComponent(createSession({ sessionName: "review" }), createFooterData(1));
+		expect(footer.getProjectLabel()).toBe("/tmp/project (main) • review");
+		footer.setProjectLabelVisible(false);
+		expect(footer.render(120)).toHaveLength(1);
+	});
+
 	it("keeps stats line within width for wide model and provider names", () => {
 		const width = 60;
 		const session = createSession({

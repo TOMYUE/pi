@@ -654,6 +654,18 @@ describe("ModelRegistry", () => {
 			expect(anthropicModels.some((m) => m.id.includes("claude"))).toBe(true);
 		});
 
+		test("refresh() reloads local models without fetching remote catalogs", async () => {
+			writeModelsJson({
+				anthropic: providerConfig("https://proxy.example.com/v1", [{ id: "claude-custom" }]),
+			});
+			const fetchSpy = vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("unexpected network request"));
+			const registry = await createModelRegistry(authStorage, modelsJsonPath);
+
+			await registry.refresh();
+
+			expect(fetchSpy).not.toHaveBeenCalled();
+		});
+
 		test("removing custom models from models.json keeps built-in provider models", async () => {
 			writeModelsJson({
 				anthropic: providerConfig("https://proxy.example.com/v1", [{ id: "claude-custom" }]),

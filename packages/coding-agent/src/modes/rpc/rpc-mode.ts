@@ -17,6 +17,7 @@ import type {
 	ExtensionUIContext,
 	ExtensionUIDialogOptions,
 	ExtensionWidgetOptions,
+	HiddenThinkingLabels,
 	WorkingIndicatorOptions,
 } from "../../core/extensions/index.ts";
 import {
@@ -187,7 +188,7 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 			// Working indicator customization not supported in RPC mode - requires TUI loader access
 		},
 
-		setHiddenThinkingLabel(_label?: string): void {
+		setHiddenThinkingLabel(_labels?: string | HiddenThinkingLabels): void {
 			// Hidden thinking label not supported in RPC mode - requires TUI message rendering access
 		},
 

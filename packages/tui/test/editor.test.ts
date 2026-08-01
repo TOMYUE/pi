@@ -3,7 +3,7 @@ import { describe, it } from "node:test";
 import { stripVTControlCharacters } from "node:util";
 import { type AutocompleteProvider, CombinedAutocompleteProvider } from "../src/autocomplete.ts";
 import { Editor, wordWrapLine } from "../src/components/editor.ts";
-import { TUI } from "../src/tui.ts";
+import { CURSOR_MARKER, TUI } from "../src/tui.ts";
 import { visibleWidth } from "../src/utils.ts";
 import { defaultEditorTheme } from "./test-themes.ts";
 import { VirtualTerminal } from "./virtual-terminal.ts";
@@ -700,6 +700,205 @@ describe("Editor component", () => {
 	});
 
 	describe("Scroll indicators", () => {
+		it("mouse-scrolls a long draft independently until keyboard activity resumes cursor follow", () => {
+			const width = 20;
+			const editor = new Editor(createTestTUI(width, 20), defaultEditorTheme, { borderStyle: "box" });
+			editor.setText(Array.from({ length: 12 }, (_, index) => `line ${index}`).join("\n"));
+			const cursor = editor.getCursor();
+			editor.render(width);
+
+			editor.handleMouse({ type: "wheel", button: 0, x: 5, y: 2, wheelDirection: "up" });
+			const scrolled = editor.render(width);
+			assert.deepStrictEqual(editor.getCursor(), cursor);
+			assert.match(stripVTControlCharacters(scrolled[0]!), /^╭─── ↑ 3 more/);
+			assert.ok(stripVTControlCharacters(scrolled[1]!).startsWith("│ line 3"));
+			assert.ok(scrolled.some((line) => stripVTControlCharacters(line).startsWith("╰─── ↓")));
+			for (const line of scrolled) assert.strictEqual(visibleWidth(line), width);
+
+			editor.handleInput("\x1b[D");
+			const followed = editor.render(width);
+			assert.ok(followed.some((line) => stripVTControlCharacters(line).includes("line 11")));
+		});
+
+		it("selects exact wrapped Unicode text across a wrap-space boundary and highlights it", () => {
+			const editor = new Editor(createTestTUI(12), defaultEditorTheme, { borderStyle: "box" });
+			editor.setText("ab✅ cd efgh");
+			editor.focused = true;
+			let selected = "";
+			editor.onSelection = (text) => {
+				selected = text;
+			};
+			editor.render(12);
+			editor.handleMouse({ type: "press", button: 0, x: 2, y: 1 });
+			editor.handleMouse({ type: "drag", button: 0, x: 6, y: 2 });
+			const selectedRender = editor.render(12).join("\n");
+			assert.ok(selectedRender.includes("\x1b[7m✅\x1b[0m"));
+			assert.ok(selectedRender.includes(CURSOR_MARKER));
+			editor.handleMouse({ type: "release", button: 0, x: 6, y: 2 });
+			assert.strictEqual(selected, "ab✅ cd ef");
+			assert.strictEqual(editor.getText(), "ab✅ cd efgh");
+		});
+
+		it("selects whole Unicode graphemes forward and backward, but does not copy a click", () => {
+			const editor = new Editor(createTestTUI(20), defaultEditorTheme, { borderStyle: "box" });
+			editor.setText("a✅éz");
+			const selections: string[] = [];
+			editor.onSelection = (text) => selections.push(text);
+			editor.render(20);
+
+			editor.handleMouse({ type: "press", button: 0, x: 3, y: 1 });
+			editor.handleMouse({ type: "release", button: 0, x: 3, y: 1 });
+			assert.deepStrictEqual(selections, []);
+
+			editor.handleMouse({ type: "press", button: 0, x: 2, y: 1 });
+			editor.handleMouse({ type: "drag", button: 0, x: 5, y: 1 });
+			editor.handleMouse({ type: "release", button: 0, x: 5, y: 1 });
+			editor.handleMouse({ type: "press", button: 0, x: 6, y: 1 });
+			editor.handleMouse({ type: "drag", button: 0, x: 3, y: 1 });
+			editor.handleMouse({ type: "release", button: 0, x: 3, y: 1 });
+
+			assert.deepStrictEqual(selections, ["a✅é", "✅éz"]);
+		});
+
+		it("Backspace deletes a wrapped Unicode mouse selection atomically and undo restores it", () => {
+			const editor = new Editor(createTestTUI(12), defaultEditorTheme, { borderStyle: "box" });
+			editor.setText("ab✅ cd efgh");
+			const changes: string[] = [];
+			editor.onChange = (text) => changes.push(text);
+			editor.render(12);
+			editor.handleMouse({ type: "press", button: 0, x: 2, y: 1 });
+			editor.handleMouse({ type: "drag", button: 0, x: 6, y: 2 });
+			editor.handleMouse({ type: "release", button: 0, x: 6, y: 2 });
+
+			editor.handleInput("\x7f");
+			assert.strictEqual(editor.getText(), "gh");
+			assert.deepStrictEqual(editor.getCursor(), { line: 0, col: 0 });
+			assert.deepStrictEqual(changes, ["gh"]);
+
+			editor.handleInput("\x1b[45;5u");
+			assert.strictEqual(editor.getText(), "ab✅ cd efgh");
+		});
+
+		it("Delete removes a multiline mouse selection and leaves the cursor at its start", () => {
+			const editor = new Editor(createTestTUI(20), defaultEditorTheme, { borderStyle: "box" });
+			editor.setText("abc\ndefghi");
+			editor.render(20);
+			editor.handleMouse({ type: "press", button: 0, x: 4, y: 1 });
+			editor.handleMouse({ type: "drag", button: 0, x: 4, y: 2 });
+			editor.handleMouse({ type: "release", button: 0, x: 4, y: 2 });
+
+			editor.handleInput("\x1b[3~");
+			assert.strictEqual(editor.getText(), "abghi");
+			assert.deepStrictEqual(editor.getCursor(), { line: 0, col: 2 });
+		});
+
+		it("closes stale autocomplete when deleting a mouse selection", async () => {
+			const editor = new Editor(createTestTUI(20), defaultEditorTheme, { borderStyle: "box" });
+			const mockProvider: AutocompleteProvider = {
+				getSuggestions: async (_lines, _cursorLine, _cursorCol) => ({
+					items: [{ value: "@main.ts", label: "main.ts" }],
+					prefix: "@m",
+				}),
+				applyCompletion,
+			};
+			editor.setAutocompleteProvider(mockProvider);
+			editor.handleInput("@");
+			editor.handleInput("m");
+			await new Promise((resolve) => setTimeout(resolve, 50));
+			await flushAutocomplete();
+			assert.strictEqual(editor.isShowingAutocomplete(), true);
+
+			editor.render(20);
+			editor.handleMouse({ type: "press", button: 0, x: 2, y: 1 });
+			editor.handleMouse({ type: "drag", button: 0, x: 3, y: 1 });
+			editor.handleMouse({ type: "release", button: 0, x: 3, y: 1 });
+			editor.handleInput("\x7f");
+
+			assert.strictEqual(editor.getText(), "");
+			assert.strictEqual(editor.isShowingAutocomplete(), false);
+		});
+
+		it("renders a rounded input box with a minimum body height", () => {
+			const width = 20;
+			const borderColor = (text: string) => `\x1b[35m${text}\x1b[39m`;
+			const editor = new Editor(
+				createTestTUI(width),
+				{ ...defaultEditorTheme, borderColor },
+				{ borderStyle: "box" },
+			);
+			editor.setText("first\nsecond");
+
+			const lines = editor.render(width);
+			assert.strictEqual(lines.length, 5);
+			assert.strictEqual(lines[0], borderColor(`╭${"─".repeat(width - 2)}╮`));
+			assert.strictEqual(lines.at(-1), borderColor(`╰${"─".repeat(width - 2)}╯`));
+			assert.match(stripVTControlCharacters(lines[1]!), /^│ first/);
+			assert.match(stripVTControlCharacters(lines[2]!), /^│ second/);
+			for (const line of lines) {
+				assert.strictEqual(visibleWidth(line), width);
+			}
+		});
+
+		it("right-aligns a bottom border label while preserving long-input scroll indicators", () => {
+			const width = 40;
+			const editor = new Editor(createTestTUI(width, 20), defaultEditorTheme, { borderStyle: "box" });
+			editor.setBottomBorderLabel(() => "~/project (main)");
+			editor.setText(Array.from({ length: 12 }, (_, index) => `line ${index}`).join("\n"));
+			editor.render(width);
+			editor.handleMouse({ type: "wheel", button: 0, x: 5, y: 2, wheelDirection: "up" });
+
+			const bottomBorder = stripVTControlCharacters(editor.render(width).at(-1)!);
+			assert.match(bottomBorder, /^╰─── ↓ \d+ more .* ~\/project \(main\) ╯$/);
+			assert.strictEqual(visibleWidth(bottomBorder), width);
+		});
+
+		it("truncates a bottom border label without breaking narrow rounded borders", () => {
+			const width = 12;
+			const editor = new Editor(createTestTUI(width, 20), defaultEditorTheme, { borderStyle: "box" });
+			editor.setBottomBorderLabel(() => "~/a-very-long-project (main)");
+
+			const bottomBorder = stripVTControlCharacters(editor.render(width).at(-1)!);
+			assert.strictEqual(visibleWidth(bottomBorder), width);
+			assert.match(bottomBorder, /^╰ .* ╯$/);
+		});
+
+		it("reports border-label support only for box editors", () => {
+			const boxEditor = new Editor(createTestTUI(), defaultEditorTheme, { borderStyle: "box" });
+			const horizontalEditor = new Editor(createTestTUI(), defaultEditorTheme);
+
+			assert.strictEqual(
+				boxEditor.setBottomBorderLabel(() => "project"),
+				true,
+			);
+			assert.strictEqual(
+				horizontalEditor.setBottomBorderLabel(() => "project"),
+				false,
+			);
+		});
+
+		it("keeps the border label visible below the minimum rounded-box width", () => {
+			const width = 4;
+			const editor = new Editor(createTestTUI(width, 20), defaultEditorTheme, { borderStyle: "box" });
+			editor.setBottomBorderLabel(() => "project");
+
+			const bottomBorder = stripVTControlCharacters(editor.render(width).at(-1)!);
+			assert.strictEqual(visibleWidth(bottomBorder), width);
+			assert.notStrictEqual(bottomBorder, "─".repeat(width));
+		});
+
+		it("prioritizes the long-input scroll indicator over a long bottom border label", () => {
+			const width = 24;
+			const editor = new Editor(createTestTUI(width, 20), defaultEditorTheme, { borderStyle: "box" });
+			editor.setBottomBorderLabel(() => "~/a-very-long-project-name (main)");
+			editor.setText(Array.from({ length: 12 }, (_, index) => `line ${index}`).join("\n"));
+			editor.render(width);
+			editor.handleMouse({ type: "wheel", button: 0, x: 5, y: 2, wheelDirection: "up" });
+
+			const bottomBorder = stripVTControlCharacters(editor.render(width).at(-1)!);
+			assert.match(bottomBorder, /↓ \d+ more/);
+			assert.strictEqual(visibleWidth(bottomBorder), width);
+		});
+
 		it("keeps truncated scroll indicators within width and preserves their color (issue #6962)", () => {
 			const width = 10;
 			const borderColor = (text: string) => `\x1b[35m${text}\x1b[39m`;
@@ -2506,6 +2705,213 @@ describe("Editor component", () => {
 			assert.strictEqual(editor.isShowingAutocomplete(), false);
 		});
 
+		it("renders slash commands as a command palette and removes only its query on cancel", async () => {
+			const editor = new Editor(createTestTUI(), defaultEditorTheme);
+			const provider = new CombinedAutocompleteProvider(
+				[
+					{ name: "settings", description: "Open settings menu", category: "pi" },
+					{ name: "model", description: "Select model", category: "pi" },
+				],
+				process.cwd(),
+			);
+			editor.setAutocompleteProvider(provider);
+
+			editor.handleInput("/");
+			await flushAutocomplete();
+
+			const palette = editor
+				.render(80)
+				.map((line) => stripVTControlCharacters(line))
+				.join("\n");
+			assert.match(palette, /^╭─ Command Palette .*╮/);
+			assert.match(palette, /│ {2}> {2}/);
+			assert.match(palette, /pi\s+settings\s+Open settings menu/);
+			assert.ok(!palette.includes("/settings"));
+			assert.match(palette, /↑↓ navigate\s+enter run\s+tab insert\s+escape close/);
+			assert.match(palette, /╰─+╯$/);
+
+			editor.setText("draft");
+			editor.handleInput("\x01");
+			editor.handleInput("/");
+			await flushAutocomplete();
+			assert.strictEqual(editor.getText(), "/draft");
+
+			editor.handleInput("\x1b");
+			assert.strictEqual(editor.getText(), "draft");
+			assert.strictEqual(editor.isShowingAutocomplete(), false);
+		});
+
+		it("keeps the command palette open for an unmatched query", async () => {
+			const editor = new Editor(createTestTUI(), defaultEditorTheme);
+			editor.setAutocompleteProvider(
+				new CombinedAutocompleteProvider(
+					[{ name: "model", description: "Select model", category: "pi" }],
+					process.cwd(),
+				),
+			);
+
+			for (const character of "/zzz") editor.handleInput(character);
+			await flushAutocomplete();
+
+			const palette = editor
+				.render(80)
+				.map((line) => stripVTControlCharacters(line))
+				.join("\n");
+			assert.strictEqual(editor.isShowingAutocomplete(), true);
+			assert.match(palette, /No matching commands/);
+
+			let submitted = false;
+			editor.onSubmit = () => {
+				submitted = true;
+			};
+			editor.handleInput("\r");
+			assert.strictEqual(submitted, false);
+		});
+
+		it("uses the live query and disables stale choices while suggestions are pending", async () => {
+			let resolvePending:
+				| ((suggestions: { items: Array<{ value: string; label: string }>; prefix: string }) => void)
+				| undefined;
+			const editor = new Editor(createTestTUI(), defaultEditorTheme);
+			editor.setAutocompleteProvider({
+				getSuggestions: async (lines, _cursorLine, cursorCol) => {
+					const prefix = (lines[0] ?? "").slice(0, cursorCol);
+					if (prefix === "/") return { items: [{ value: "model", label: "model" }], prefix };
+					return await new Promise((resolve) => {
+						resolvePending = resolve;
+					});
+				},
+				applyCompletion,
+			});
+			let submitted = "";
+			editor.onSubmit = (text) => {
+				submitted = text;
+			};
+
+			editor.handleInput("/");
+			await flushAutocomplete();
+			editor.handleInput("x");
+			assert.match(editor.render(80).map(stripVTControlCharacters).join("\n"), /│ {2}> x/);
+
+			editor.handleInput("\r");
+			editor.handleInput("\t");
+			assert.strictEqual(submitted, "");
+			assert.strictEqual(editor.getText(), "/x");
+
+			editor.handleInput("\x1b");
+			assert.strictEqual(editor.getText(), "");
+			resolvePending?.({ items: [], prefix: "/x" });
+			await flushAutocomplete();
+			assert.strictEqual(editor.isShowingAutocomplete(), false);
+		});
+
+		it("starts a current request without waiting for an aborted provider", async () => {
+			const resolvers = new Map<
+				string,
+				(suggestions: { items: Array<{ value: string; label: string }>; prefix: string }) => void
+			>();
+			const editor = new Editor(createTestTUI(), defaultEditorTheme);
+			editor.setAutocompleteProvider({
+				getSuggestions: async (lines, _cursorLine, cursorCol) => {
+					const prefix = (lines[0] ?? "").slice(0, cursorCol);
+					return await new Promise((resolve) => resolvers.set(prefix, resolve));
+				},
+				applyCompletion,
+			});
+
+			editor.handleInput("/");
+			editor.handleInput("m");
+			assert.deepStrictEqual([...resolvers.keys()], ["/", "/m"]);
+
+			resolvers.get("/m")?.({ items: [{ value: "model", label: "model" }], prefix: "/m" });
+			await flushAutocomplete();
+			assert.match(editor.render(80).map(stripVTControlCharacters).join("\n"), /model/);
+
+			resolvers.get("/")?.({ items: [{ value: "help", label: "help" }], prefix: "/" });
+			await flushAutocomplete();
+			const rendered = editor.render(80).map(stripVTControlCharacters).join("\n");
+			assert.match(rendered, /model/);
+			assert.ok(!rendered.includes("help"));
+		});
+
+		it("bounds the command palette to narrow and short terminals", async () => {
+			const provider = new CombinedAutocompleteProvider(
+				Array.from({ length: 20 }, (_, index) => ({
+					name: `very-long-command-name-${index}`,
+					description: "A description that is too long for the terminal",
+					category: "very-long-category",
+					shortcut: "ctrl+shift+something-long",
+				})),
+				process.cwd(),
+			);
+
+			for (const [width, height] of [
+				[1, 1],
+				[2, 3],
+				[4, 4],
+				[10, 6],
+				[30, 10],
+			] as const) {
+				const editor = new Editor(createTestTUI(width, height), defaultEditorTheme, { autocompleteMaxVisible: 20 });
+				editor.setAutocompleteProvider(provider);
+				editor.handleInput("/");
+				await flushAutocomplete();
+				const rendered = editor.render(width);
+
+				assert.ok(rendered.length <= height, `palette rendered ${rendered.length} rows at ${width}x${height}`);
+				for (const line of rendered) {
+					assert.ok(
+						visibleWidth(line) <= width,
+						`line rendered at width ${visibleWidth(line)} in ${width}x${height}`,
+					);
+				}
+			}
+		});
+
+		it("runs the highlighted command directly from the command palette", async () => {
+			const editor = new Editor(createTestTUI(), defaultEditorTheme);
+			const provider = new CombinedAutocompleteProvider(
+				[
+					{ name: "settings", description: "Open settings menu", category: "pi" },
+					{ name: "model", description: "Select model", category: "pi" },
+				],
+				process.cwd(),
+			);
+			let submitted = "";
+			editor.onSubmit = (text) => {
+				submitted = text;
+			};
+			editor.setAutocompleteProvider(provider);
+
+			editor.handleInput("/");
+			await flushAutocomplete();
+			editor.handleInput("\x1b[B");
+			editor.handleInput("\r");
+
+			assert.strictEqual(submitted, "/model");
+			assert.strictEqual(editor.getText(), "");
+			assert.strictEqual(editor.isShowingAutocomplete(), false);
+		});
+
+		it("runs only the selected command when the palette opens before a draft", async () => {
+			const editor = new Editor(createTestTUI(), defaultEditorTheme);
+			editor.setText("draft");
+			editor.handleInput("\x01");
+			editor.setAutocompleteProvider(
+				new CombinedAutocompleteProvider([{ name: "settings", description: "Open settings" }], process.cwd()),
+			);
+			let submitted = "";
+			editor.onSubmit = (text) => {
+				submitted = text;
+			};
+
+			editor.handleInput("/");
+			await flushAutocomplete();
+			editor.handleInput("\r");
+
+			assert.strictEqual(submitted, "/settings");
+		});
+
 		it("applies exact typed slash-argument value on Enter even when first item is highlighted", async () => {
 			const editor = new Editor(createTestTUI(), defaultEditorTheme);
 
@@ -3587,6 +3993,25 @@ describe("Editor component", () => {
 			const editor = new Editor(createTestTUI(), defaultEditorTheme);
 			const text = pasteWithMarker(editor);
 			assert.match(text, /\[paste #\d+ \+\d+ lines\]/);
+		});
+
+		it("removes selected paste payloads and restores them on undo", () => {
+			const editor = new Editor(createTestTUI(80), defaultEditorTheme, { borderStyle: "box" });
+			editor.handleInput("A");
+			const marker = pasteWithMarker(editor);
+			editor.handleInput("B");
+			const expanded = editor.getExpandedText();
+			editor.render(80);
+
+			editor.handleMouse({ type: "press", button: 0, x: 3, y: 1 });
+			editor.handleMouse({ type: "drag", button: 0, x: 3 + marker.length, y: 1 });
+			editor.handleMouse({ type: "release", button: 0, x: 3 + marker.length, y: 1 });
+			editor.handleInput("\x1b[3~");
+
+			assert.strictEqual(editor.getText(), "A");
+			assert.strictEqual(editor.getExpandedText(), "A");
+			editor.handleInput("\x1b[45;5u");
+			assert.strictEqual(editor.getExpandedText(), expanded);
 		});
 
 		it("treats paste marker as single unit for right arrow", () => {

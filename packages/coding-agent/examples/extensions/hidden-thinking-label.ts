@@ -18,15 +18,16 @@
  *   /thinking-label          Reset to the default label
  */
 
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext, HiddenThinkingLabels } from "@earendil-works/pi-coding-agent";
 
-const DEFAULT_LABEL = "Pondering...";
+const CUSTOM_LABELS: HiddenThinkingLabels = { active: "Pondering...", complete: "Pondered" };
+const BUILT_IN_LABELS: HiddenThinkingLabels = { active: "Thinking...", complete: "Thought" };
 
 export default function (pi: ExtensionAPI) {
-	let label = DEFAULT_LABEL;
+	let labels: string | HiddenThinkingLabels = CUSTOM_LABELS;
 
 	const applyLabel = (ctx: ExtensionContext) => {
-		ctx.ui.setHiddenThinkingLabel(label);
+		ctx.ui.setHiddenThinkingLabel(labels);
 	};
 
 	pi.on("session_start", async (_event, ctx) => {
@@ -39,15 +40,15 @@ export default function (pi: ExtensionAPI) {
 			const nextLabel = args.trim();
 
 			if (!nextLabel) {
-				label = DEFAULT_LABEL;
+				labels = BUILT_IN_LABELS;
 				ctx.ui.setHiddenThinkingLabel();
-				ctx.ui.notify(`Hidden thinking label reset to: ${DEFAULT_LABEL}`);
+				ctx.ui.notify("Hidden thinking labels reset to: Thinking... / Thought");
 				return;
 			}
 
-			label = nextLabel;
-			ctx.ui.setHiddenThinkingLabel(label);
-			ctx.ui.notify(`Hidden thinking label set to: ${label}`);
+			labels = nextLabel;
+			ctx.ui.setHiddenThinkingLabel(labels);
+			ctx.ui.notify(`Hidden thinking label set to: ${labels}`);
 		},
 	});
 }

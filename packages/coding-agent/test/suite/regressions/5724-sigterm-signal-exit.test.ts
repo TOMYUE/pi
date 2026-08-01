@@ -13,7 +13,7 @@ type ShutdownThis = {
 	unregisterSignalHandlers: () => void;
 	runtimeHost: { dispose: () => Promise<void> };
 	ui: { terminal: { drainInput: (ms: number) => Promise<void> } };
-	themeController: { disableAutoSync: () => void };
+	themeController: { cancelPendingApply: () => void; disableAutoSync: () => void };
 	stop: () => void;
 };
 
@@ -74,7 +74,12 @@ describe("InteractiveMode SIGTERM shutdown with signal-exit (#5724)", () => {
 					}),
 				},
 			},
-			themeController: { disableAutoSync: vi.fn() },
+			themeController: {
+				cancelPendingApply: vi.fn(() => {
+					order.push("cancelTheme");
+				}),
+				disableAutoSync: vi.fn(),
+			},
 			stop: vi.fn(() => {
 				order.push("stop");
 			}),
@@ -83,12 +88,12 @@ describe("InteractiveMode SIGTERM shutdown with signal-exit (#5724)", () => {
 		const shutdownPromise = callShutdown(context, { fromSignal: true });
 		await Promise.resolve();
 
-		expect(order).toEqual(["dispose"]);
+		expect(order).toEqual(["cancelTheme", "dispose"]);
 		expect(context.unregisterSignalHandlers).not.toHaveBeenCalled();
 
 		dispose.resolve();
 		await shutdownPromise;
 
-		expect(order).toEqual(["dispose", "drainInput", "stop"]);
+		expect(order).toEqual(["cancelTheme", "dispose", "drainInput", "stop"]);
 	});
 });

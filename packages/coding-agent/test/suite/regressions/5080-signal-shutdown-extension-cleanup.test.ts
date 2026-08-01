@@ -21,7 +21,7 @@ type ShutdownThis = {
 	unregisterSignalHandlers: () => void;
 	runtimeHost: { dispose: () => Promise<void> };
 	ui: { terminal: { drainInput: (ms: number) => Promise<void> } };
-	themeController: { disableAutoSync: () => void };
+	themeController: { cancelPendingApply: () => void; disableAutoSync: () => void };
 	stop: () => void;
 	sessionManager: SessionManager;
 };
@@ -82,7 +82,7 @@ function createContext(order: string[], sessionManager = createSessionManager())
 				}),
 			},
 		},
-		themeController: { disableAutoSync: vi.fn() },
+		themeController: { cancelPendingApply: vi.fn(), disableAutoSync: vi.fn() },
 		stop: vi.fn(() => {
 			order.push("stop");
 		}),
@@ -118,6 +118,32 @@ describe("InteractiveMode.shutdown ordering (#5080)", () => {
 
 		expect(order).toEqual(["dispose", "drainInput", "stop"]);
 		expect(context.isShuttingDown).toBe(true);
+	});
+
+	test("signal-triggered shutdown stops the TUI when disposal rejects", async () => {
+		const order: string[] = [];
+		const context = createContext(order);
+		vi.mocked(context.runtimeHost.dispose).mockRejectedValue(new Error("dispose failed"));
+
+		await expect(
+			(interactiveModePrototype as InteractiveModePrototypeWithShutdown).shutdown.call(context, {
+				fromSignal: true,
+			}),
+		).rejects.toThrow("dispose failed");
+
+		expect(order).toEqual(["stop"]);
+	});
+
+	test("interactive quit stops the TUI when input drain rejects", async () => {
+		const order: string[] = [];
+		const context = createContext(order);
+		vi.mocked(context.ui.terminal.drainInput).mockRejectedValue(new Error("drain failed"));
+
+		await expect(
+			(interactiveModePrototype as InteractiveModePrototypeWithShutdown).shutdown.call(context),
+		).rejects.toThrow("drain failed");
+
+		expect(order).toEqual(["stop"]);
 	});
 
 	test("interactive quit stops the TUI before emitting session_shutdown", async () => {

@@ -32,6 +32,11 @@ export interface Keybindings {
 	"tui.input.submit": true;
 	"tui.input.tab": true;
 	"tui.input.copy": true;
+	// Fullscreen transcript navigation
+	"tui.transcript.pageUp": true;
+	"tui.transcript.pageDown": true;
+	"tui.transcript.top": true;
+	"tui.transcript.bottom": true;
 	// Generic selection actions
 	"tui.select.up": true;
 	"tui.select.down": true;
@@ -119,6 +124,10 @@ export const TUI_KEYBINDINGS = {
 	"tui.input.submit": { defaultKeys: "enter", description: "Submit input" },
 	"tui.input.tab": { defaultKeys: "tab", description: "Tab / autocomplete" },
 	"tui.input.copy": { defaultKeys: "ctrl+c", description: "Copy selection" },
+	"tui.transcript.pageUp": { defaultKeys: "pageUp", description: "Scroll transcript up one page" },
+	"tui.transcript.pageDown": { defaultKeys: "pageDown", description: "Scroll transcript down one page" },
+	"tui.transcript.top": { defaultKeys: "ctrl+home", description: "Scroll to transcript start" },
+	"tui.transcript.bottom": { defaultKeys: "ctrl+end", description: "Scroll to transcript end" },
 	"tui.select.up": { defaultKeys: "up", description: "Move selection up" },
 	"tui.select.down": { defaultKeys: "down", description: "Move selection down" },
 	"tui.select.pageUp": { defaultKeys: "pageUp", description: "Selection page up" },

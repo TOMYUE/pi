@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { describe, it } from "node:test";
 import type { Terminal as XtermTerminalType } from "@xterm/headless";
 import { Image } from "../src/components/image.ts";
+import type { Terminal } from "../src/terminal.ts";
 import {
 	deleteKittyImage,
 	encodeKitty,
@@ -12,22 +13,54 @@ import {
 	setCapabilities,
 	setCellDimensions,
 } from "../src/terminal-image.ts";
-import { type Component, TUI } from "../src/tui.ts";
+import { type Component, Container, CURSOR_MARKER, TUI, type TuiMouseEvent } from "../src/tui.ts";
 import { VirtualTerminal } from "./virtual-terminal.ts";
 
 class TestComponent implements Component {
 	lines: string[] = [];
+	inputs: string[] = [];
 	render(_width: number): string[] {
 		return this.lines;
+	}
+	handleInput(data: string): void {
+		this.inputs.push(data);
 	}
 	invalidate(): void {}
 }
 
+class MouseComponent extends TestComponent {
+	mouseEvents: TuiMouseEvent[] = [];
+	handleMouse(event: TuiMouseEvent): void {
+		this.mouseEvents.push(event);
+	}
+}
+
+class CountingContainer extends Container {
+	renderCount = 0;
+
+	override render(width: number): string[] {
+		this.renderCount++;
+		return super.render(width);
+	}
+}
+
 class LoggingVirtualTerminal extends VirtualTerminal {
 	private writes: string[] = [];
+	private lifecycleEvents: string[] = [];
+
+	override start(onInput: (data: string) => void, onResize: () => void): void {
+		this.lifecycleEvents.push("start");
+		super.start(onInput, onResize);
+	}
+
+	override stop(): void {
+		this.lifecycleEvents.push("stop");
+		super.stop();
+	}
 
 	override write(data: string): void {
 		this.writes.push(data);
+		this.lifecycleEvents.push(data);
 		super.write(data);
 	}
 
@@ -35,9 +68,41 @@ class LoggingVirtualTerminal extends VirtualTerminal {
 		return this.writes.join("");
 	}
 
+	getLifecycleEvents(): string[] {
+		return [...this.lifecycleEvents];
+	}
+
 	clearWrites(): void {
 		this.writes = [];
+		this.lifecycleEvents = [];
 	}
+}
+
+class ThrowingTerminal implements Terminal {
+	readonly writes: string[] = [];
+	stopCalls = 0;
+	readonly columns = 80;
+	readonly rows = 24;
+	readonly kittyProtocolActive = false;
+
+	start(): void {
+		throw new Error("start failed");
+	}
+	stop(): void {
+		this.stopCalls++;
+	}
+	async drainInput(): Promise<void> {}
+	write(data: string): void {
+		this.writes.push(data);
+	}
+	moveBy(): void {}
+	hideCursor(): void {}
+	showCursor(): void {}
+	clearLine(): void {}
+	clearFromCursor(): void {}
+	clearScreen(): void {}
+	setTitle(): void {}
+	setProgress(): void {}
 }
 
 async function withEnv<T>(updates: Record<string, string | undefined>, run: () => Promise<T>): Promise<T> {
@@ -788,5 +853,762 @@ describe("TUI differential rendering", () => {
 		]);
 
 		tui.stop();
+	});
+});
+
+describe("TUI fixed-bottom fullscreen rendering", () => {
+	it("restores fullscreen terminal state when terminal startup fails", () => {
+		const terminal = new ThrowingTerminal();
+		const tui = new TUI(terminal);
+		const component = new TestComponent();
+		tui.addChild(component);
+		tui.setFixedBottom(component);
+
+		assert.throws(() => tui.start(), /start failed/);
+		assert.strictEqual(terminal.stopCalls, 1);
+		assert.strictEqual(
+			terminal.writes.join(""),
+			"\x1b[?1049h\x1b[H\x1b[?1000h\x1b[?1002h\x1b[?1006h\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?1049l",
+		);
+
+		tui.stop();
+		assert.strictEqual(terminal.stopCalls, 1);
+	});
+
+	it("reuses the transcript for scoped composer renders", async () => {
+		const terminal = new VirtualTerminal(40, 8);
+		const tui = new TUI(terminal);
+		const transcript = new CountingContainer();
+		const history = new TestComponent();
+		const composer = new TestComponent();
+		history.lines = Array.from({ length: 20_000 }, (_, i) => `Line ${i}`);
+		composer.lines = ["Composer"];
+		transcript.addChild(history);
+		tui.addChild(transcript);
+		tui.addChild(composer);
+		tui.setFixedBottom(composer);
+		tui.start();
+		await terminal.waitForRender();
+		assert.strictEqual(transcript.renderCount, 1);
+
+		for (let i = 0; i < 100; i++) {
+			composer.lines = [`Composer ${i}`];
+			tui.requestRenderFor(composer);
+			await terminal.waitForRender();
+		}
+
+		assert.strictEqual(transcript.renderCount, 1);
+		assert.strictEqual(terminal.getViewport()[7], "Composer 99");
+
+		terminal.sendInput("\x1b[5~");
+		await terminal.waitForRender();
+		assert.strictEqual(transcript.renderCount, 1);
+		assert.strictEqual(terminal.getViewport()[0], "Line 19987");
+		tui.stop();
+	});
+
+	it("invalidates the transcript cache for transcript changes, width changes, and full invalidation", async () => {
+		const terminal = new VirtualTerminal(30, 6);
+		const tui = new TUI(terminal);
+		const transcript = new CountingContainer();
+		const history = new TestComponent();
+		const composer = new TestComponent();
+		history.lines = ["Line 0", "Line 1"];
+		composer.lines = ["Composer"];
+		transcript.addChild(history);
+		tui.addChild(transcript);
+		tui.addChild(composer);
+		tui.setFixedBottom(composer);
+		tui.start();
+		await terminal.waitForRender();
+
+		history.lines[1] = "Line 1 changed";
+		tui.requestRenderFor(history);
+		await terminal.waitForRender();
+		assert.strictEqual(transcript.renderCount, 2);
+		assert.strictEqual(terminal.getViewport()[1], "Line 1 changed");
+
+		const added = new TestComponent();
+		added.lines = ["Added"];
+		transcript.addChild(added);
+		tui.requestRenderFor(transcript);
+		await terminal.waitForRender();
+		assert.strictEqual(transcript.renderCount, 3);
+		assert.ok(terminal.getViewport().includes("Added"));
+
+		transcript.removeChild(added);
+		tui.requestRenderFor(transcript);
+		await terminal.waitForRender();
+		assert.strictEqual(transcript.renderCount, 4);
+		assert.ok(!terminal.getViewport().includes("Added"));
+
+		terminal.resize(35, 6);
+		await terminal.waitForRender();
+		assert.strictEqual(transcript.renderCount, 5);
+
+		tui.invalidate();
+		tui.requestRenderFor(composer);
+		await terminal.waitForRender();
+		assert.strictEqual(transcript.renderCount, 6);
+		tui.stop();
+	});
+
+	it("lets a dirty transcript request win when it coalesces with a scoped request", async () => {
+		const terminal = new VirtualTerminal(30, 5);
+		const tui = new TUI(terminal);
+		const transcript = new CountingContainer();
+		const history = new TestComponent();
+		const composer = new TestComponent();
+		history.lines = ["Before"];
+		composer.lines = ["Composer"];
+		transcript.addChild(history);
+		tui.addChild(transcript);
+		tui.addChild(composer);
+		tui.setFixedBottom(composer);
+		tui.start();
+		await terminal.waitForRender();
+
+		composer.lines = ["Composer changed"];
+		tui.requestRenderFor(composer);
+		history.lines = ["After"];
+		tui.requestRender();
+		await terminal.waitForRender();
+
+		assert.strictEqual(transcript.renderCount, 2);
+		assert.strictEqual(terminal.getViewport()[0], "After");
+		assert.strictEqual(terminal.getViewport()[4], "Composer changed");
+		tui.stop();
+	});
+
+	it("keeps the composer anchored while transcript output streams", async () => {
+		const terminal = new VirtualTerminal(30, 8);
+		const tui = new TUI(terminal);
+		const transcript = new TestComponent();
+		const composer = new TestComponent();
+		transcript.lines = Array.from({ length: 10 }, (_, i) => `Line ${i}`);
+		composer.lines = ["Composer top", "Composer bottom"];
+		tui.addChild(transcript);
+		tui.addChild(composer);
+		tui.setFixedBottom(composer);
+
+		tui.start();
+		await terminal.waitForRender();
+		assert.deepStrictEqual(terminal.getViewport(), [
+			"Line 4",
+			"Line 5",
+			"Line 6",
+			"Line 7",
+			"Line 8",
+			"Line 9",
+			"Composer top",
+			"Composer bottom",
+		]);
+
+		transcript.lines[9] = "Line 9 streaming";
+		transcript.lines.push("Line 10");
+		tui.requestRender();
+		await terminal.waitForRender();
+		assert.deepStrictEqual(terminal.getViewport(), [
+			"Line 5",
+			"Line 6",
+			"Line 7",
+			"Line 8",
+			"Line 9 streaming",
+			"Line 10",
+			"Composer top",
+			"Composer bottom",
+		]);
+
+		tui.stop();
+	});
+
+	it("scrolls only the transcript and holds position while new output arrives", async () => {
+		const terminal = new VirtualTerminal(30, 8);
+		const tui = new TUI(terminal);
+		const transcript = new TestComponent();
+		const composer = new TestComponent();
+		transcript.lines = Array.from({ length: 12 }, (_, i) => `Line ${i}`);
+		composer.lines = ["Composer top", "Composer bottom"];
+		tui.addChild(transcript);
+		tui.addChild(composer);
+		tui.setFixedBottom(composer);
+		tui.start();
+		await terminal.waitForRender();
+
+		terminal.sendInput("\x1b[<64;10;3M");
+		await terminal.waitForRender();
+		assert.deepStrictEqual(terminal.getViewport(), [
+			"Line 3",
+			"Line 4",
+			"Line 5",
+			"Line 6",
+			"Line 7",
+			"Line 8",
+			"Composer top",
+			"Composer bottom",
+		]);
+
+		transcript.lines.push("Line 12", "Line 13");
+		tui.requestRender();
+		await terminal.waitForRender();
+		assert.deepStrictEqual(terminal.getViewport(), [
+			"Line 3",
+			"Line 4",
+			"Line 5",
+			"Line 6",
+			"Line 7",
+			"Line 8",
+			"Composer top",
+			"Composer bottom",
+		]);
+
+		terminal.sendInput("\x1b[<65;10;3M");
+		terminal.sendInput("\x1b[<65;10;3M");
+		await terminal.waitForRender();
+		transcript.lines.push("Line 14");
+		tui.requestRender();
+		await terminal.waitForRender();
+		assert.deepStrictEqual(terminal.getViewport(), [
+			"Line 9",
+			"Line 10",
+			"Line 11",
+			"Line 12",
+			"Line 13",
+			"Line 14",
+			"Composer top",
+			"Composer bottom",
+		]);
+
+		tui.stop();
+	});
+
+	it("supports keyboard transcript paging and boundary navigation with mouse capture on or off", async () => {
+		for (const mouseCapture of [false, true]) {
+			const terminal = new VirtualTerminal(30, 8);
+			const tui = new TUI(terminal);
+			tui.setMouseCapture(mouseCapture);
+			const transcript = new TestComponent();
+			const composer = new TestComponent();
+			transcript.lines = Array.from({ length: 16 }, (_, i) => `Line ${i}`);
+			composer.lines = ["Composer top", "Composer bottom"];
+			tui.addChild(transcript);
+			tui.addChild(composer);
+			tui.setFixedBottom(composer);
+			tui.start();
+			await terminal.waitForRender();
+
+			terminal.sendInput("\x1b[5~");
+			await terminal.waitForRender();
+			assert.deepStrictEqual(terminal.getViewport().slice(0, 6), [
+				"Line 5",
+				"Line 6",
+				"Line 7",
+				"Line 8",
+				"Line 9",
+				"Line 10",
+			]);
+
+			terminal.sendInput("\x1b[1;5H");
+			await terminal.waitForRender();
+			assert.deepStrictEqual(terminal.getViewport().slice(0, 6), [
+				"Line 0",
+				"Line 1",
+				"Line 2",
+				"Line 3",
+				"Line 4",
+				"Line 5",
+			]);
+
+			terminal.sendInput("\x1b[1;5F");
+			await terminal.waitForRender();
+			assert.deepStrictEqual(terminal.getViewport().slice(0, 6), [
+				"Line 10",
+				"Line 11",
+				"Line 12",
+				"Line 13",
+				"Line 14",
+				"Line 15",
+			]);
+
+			terminal.sendInput("\x1b[5~");
+			terminal.sendInput("\x1b[6~");
+			await terminal.waitForRender();
+			assert.deepStrictEqual(terminal.getViewport().slice(0, 6), [
+				"Line 10",
+				"Line 11",
+				"Line 12",
+				"Line 13",
+				"Line 14",
+				"Line 15",
+			]);
+
+			tui.stop();
+		}
+	});
+
+	it("anchors the composer after a Termux height resize", async () => {
+		await withEnv({ TERMUX_VERSION: "1" }, async () => {
+			const terminal = new VirtualTerminal(30, 8);
+			const tui = new TUI(terminal);
+			const transcript = new TestComponent();
+			const composer = new TestComponent();
+			transcript.lines = Array.from({ length: 12 }, (_, i) => `Line ${i}`);
+			composer.lines = ["Composer top", "Composer bottom"];
+			tui.addChild(transcript);
+			tui.addChild(composer);
+			tui.setFixedBottom(composer);
+			tui.start();
+			await terminal.waitForRender();
+			const redrawsBeforeResize = tui.fullRedraws;
+
+			terminal.resize(30, 10);
+			await terminal.waitForRender();
+			assert.ok(tui.fullRedraws > redrawsBeforeResize);
+			assert.deepStrictEqual(terminal.getViewport(), [
+				"Line 4",
+				"Line 5",
+				"Line 6",
+				"Line 7",
+				"Line 8",
+				"Line 9",
+				"Line 10",
+				"Line 11",
+				"Composer top",
+				"Composer bottom",
+			]);
+
+			tui.stop();
+		});
+	});
+
+	it("rerenders height-aware transcript components after a fullscreen resize", async () => {
+		const terminal = new VirtualTerminal(30, 8);
+		const tui = new TUI(terminal);
+		const transcript: Component = {
+			render: () => [`Height ${terminal.rows}`],
+			invalidate: () => {},
+		};
+		const composer = new TestComponent();
+		composer.lines = ["Composer"];
+		tui.addChild(transcript);
+		tui.addChild(composer);
+		tui.setFixedBottom(composer);
+		tui.start();
+		await terminal.waitForRender();
+		assert.ok(terminal.getViewport().includes("Height 8"));
+
+		terminal.resize(30, 6);
+		await terminal.waitForRender();
+		assert.ok(terminal.getViewport().includes("Height 6"));
+		assert.ok(!terminal.getViewport().includes("Height 8"));
+
+		tui.stop();
+	});
+
+	it("keeps the focused composer line visible when the composer is taller than the terminal", async () => {
+		const terminal = new VirtualTerminal(30, 5);
+		const tui = new TUI(terminal);
+		const transcript = new TestComponent();
+		const composer = new TestComponent();
+		transcript.lines = ["Transcript"];
+		composer.lines = Array.from({ length: 8 }, (_, i) =>
+			i === 1 ? `Composer ${i}${CURSOR_MARKER}` : `Composer ${i}`,
+		);
+		tui.addChild(transcript);
+		tui.addChild(composer);
+		tui.setFixedBottom(composer);
+		tui.start();
+		await terminal.waitForRender();
+
+		assert.deepStrictEqual(terminal.getViewport(), [
+			"Composer 1",
+			"Composer 2",
+			"Composer 3",
+			"Composer 4",
+			"Composer 5",
+		]);
+		assert.deepStrictEqual(terminal.getCursorPosition(), { x: 10, y: 0 });
+		tui.stop();
+	});
+
+	it("pads a short transcript and composites overlays across the fullscreen frame", async () => {
+		const terminal = new VirtualTerminal(30, 8);
+		const tui = new TUI(terminal);
+		const transcript = new TestComponent();
+		const composer = new TestComponent();
+		const overlay = new TestComponent();
+		transcript.lines = ["Transcript"];
+		composer.lines = ["Composer top", "Composer bottom"];
+		overlay.lines = ["Overlay"];
+		tui.addChild(transcript);
+		tui.addChild(composer);
+		tui.setFixedBottom(composer);
+		tui.start();
+		await terminal.waitForRender();
+
+		tui.showOverlay(overlay, { row: 1, col: 2, width: 7 });
+		await terminal.waitForRender();
+		assert.deepStrictEqual(terminal.getViewport(), [
+			"Transcript",
+			"  Overlay".padEnd(30),
+			"",
+			"",
+			"",
+			"",
+			"Composer top",
+			"Composer bottom",
+		]);
+		tui.stop();
+	});
+
+	it("hides Kitty image blocks that cross the transcript boundary", async () => {
+		const terminal = new LoggingVirtualTerminal(30, 5);
+		const tui = new TUI(terminal);
+		const transcript = new TestComponent();
+		const composer = new TestComponent();
+		const image = encodeKitty("AAAA", { columns: 2, rows: 3, imageId: 91, moveCursor: false });
+		transcript.lines = ["before", image, "", "", "after"];
+		composer.lines = ["Composer top", "Composer bottom"];
+		tui.addChild(transcript);
+		tui.addChild(composer);
+		tui.setFixedBottom(composer);
+		tui.start();
+		await terminal.waitForRender();
+
+		assert.ok(!terminal.getWrites().includes(image));
+		assert.deepStrictEqual(terminal.getViewport(), ["", "", "after", "Composer top", "Composer bottom"]);
+		tui.stop();
+	});
+
+	it("clips partial iTerm2 image blocks at both transcript boundaries and preserves fully visible blocks", async () => {
+		setCapabilities({ images: "iterm2", trueColor: true, hyperlinks: true });
+		setCellDimensions({ widthPx: 10, heightPx: 10 });
+		try {
+			const image = new Image(
+				"AAAA",
+				"image/png",
+				{ fallbackColor: (value) => value },
+				{ maxWidthCells: 3 },
+				{ widthPx: 30, heightPx: 30 },
+			);
+			const imageLines = image.render(30);
+			const payload = imageLines.at(-1) ?? "";
+			assert.ok(payload.startsWith("\x1b[2A\x1b]1337;File="));
+
+			for (const { transcriptLines, scrollToTop, visible } of [
+				{ transcriptLines: [...imageLines, "after", "tail"], scrollToTop: false, visible: false },
+				{ transcriptLines: ["before", "top", ...imageLines, "after"], scrollToTop: true, visible: false },
+				{ transcriptLines: imageLines, scrollToTop: false, visible: true },
+			]) {
+				const terminal = new LoggingVirtualTerminal(30, 5);
+				const tui = new TUI(terminal);
+				const transcript = new TestComponent();
+				const composer = new TestComponent();
+				transcript.lines = transcriptLines;
+				composer.lines = ["Composer", "Input"];
+				tui.addChild(transcript);
+				tui.addChild(composer);
+				tui.setFixedBottom(composer);
+				tui.start();
+				await terminal.waitForRender();
+				if (scrollToTop) {
+					terminal.clearWrites();
+					terminal.sendInput("\x1b[1;5H");
+					await terminal.waitForRender();
+				}
+
+				assert.strictEqual(terminal.getWrites().includes("\x1b]1337;File="), visible);
+				assert.strictEqual(terminal.getWrites().includes(payload), visible);
+				tui.stop();
+			}
+		} finally {
+			resetCapabilitiesCache();
+			setCellDimensions({ widthPx: 9, heightPx: 18 });
+		}
+	});
+
+	it("restores cached iTerm2 and Kitty image blocks after scrolling them through viewport boundaries", async () => {
+		setCellDimensions({ widthPx: 10, heightPx: 10 });
+		try {
+			for (const protocol of ["iterm2", "kitty"] as const) {
+				setCapabilities({ images: protocol, trueColor: true, hyperlinks: true });
+				const image = new Image(
+					"AAAA",
+					"image/png",
+					{ fallbackColor: (value) => value },
+					{ maxWidthCells: 3 },
+					{ widthPx: 30, heightPx: 30 },
+				);
+				const imageLines = image.render(30);
+				const payload = protocol === "iterm2" ? (imageLines.at(-1) ?? "") : imageLines[0];
+				for (const { lines, clippedKey, restoreKey } of [
+					{
+						lines: ["l0", "l1", ...imageLines, "l5", "l6", "l7"],
+						clippedKey: "\x1b[1;5F",
+						restoreKey: "\x1b[1;5H",
+					},
+					{ lines: ["l0", "l1", "l2", ...imageLines, "l6"], clippedKey: "\x1b[1;5H", restoreKey: "\x1b[1;5F" },
+				]) {
+					const terminal = new LoggingVirtualTerminal(30, 7);
+					const tui = new TUI(terminal);
+					const transcript = new CountingContainer();
+					const history = new TestComponent();
+					const composer = new TestComponent();
+					history.lines = lines;
+					composer.lines = ["Composer", "Input"];
+					transcript.addChild(history);
+					tui.addChild(transcript);
+					tui.addChild(composer);
+					tui.setFixedBottom(composer);
+					tui.start();
+					await terminal.waitForRender();
+
+					terminal.clearWrites();
+					terminal.sendInput(clippedKey);
+					await terminal.waitForRender();
+					assert.ok(!terminal.getWrites().includes(payload));
+					terminal.clearWrites();
+					terminal.sendInput(restoreKey);
+					await terminal.waitForRender();
+					assert.ok(terminal.getWrites().includes(payload));
+					assert.strictEqual(transcript.renderCount, 1);
+					tui.stop();
+				}
+				resetCapabilitiesCache();
+			}
+		} finally {
+			resetCapabilitiesCache();
+			setCellDimensions({ widthPx: 9, heightPx: 18 });
+		}
+	});
+
+	it("enters and restores alternate screen and mouse modes exactly once", async () => {
+		const terminal = new LoggingVirtualTerminal(30, 5);
+		const tui = new TUI(terminal);
+		const transcript = new TestComponent();
+		const composer = new TestComponent();
+		transcript.lines = ["Transcript"];
+		composer.lines = ["Composer"];
+		tui.addChild(transcript);
+		tui.addChild(composer);
+		tui.setFixedBottom(composer);
+		tui.setFocus(composer);
+		tui.start();
+		await terminal.waitForRender();
+		assert.ok(terminal.getWrites().includes("\x1b[?1049h\x1b[H\x1b[?1000h\x1b[?1002h\x1b[?1006h"));
+		terminal.sendInput("\x1b[<0;10;3M");
+		assert.deepStrictEqual(composer.inputs, []);
+		const startEvents = terminal.getLifecycleEvents();
+		assert.ok(startEvents.findIndex((event) => event.includes("\x1b[?1049h")) < startEvents.indexOf("start"));
+
+		terminal.clearWrites();
+		tui.stop();
+		tui.stop();
+		const stopEvents = terminal.getLifecycleEvents();
+		assert.ok(stopEvents.indexOf("stop") < stopEvents.findIndex((event) => event.includes("\x1b[?1049l")));
+		assert.strictEqual(terminal.getWrites().match(/\x1b\[\?1049l/g)?.length, 1);
+		assert.strictEqual(terminal.getWrites().match(/\x1b\[\?1000l/g)?.length, 1);
+		assert.strictEqual(terminal.getWrites().match(/\x1b\[\?1002l/g)?.length, 1);
+		assert.strictEqual(terminal.getWrites().match(/\x1b\[\?1003l/g)?.length, 1);
+		assert.strictEqual(terminal.getWrites().match(/\x1b\[\?1006l/g)?.length, 1);
+
+		terminal.clearWrites();
+		tui.requestRender();
+		tui.stop();
+		await new Promise<void>((resolve) => process.nextTick(resolve));
+		tui.start();
+		await terminal.waitForRender();
+		assert.strictEqual(terminal.getWrites().match(/\x1b\[\?1049h/g)?.length, 1);
+		assert.deepStrictEqual(terminal.getViewport(), ["Transcript", "", "", "", "Composer"]);
+		tui.stop();
+		assert.strictEqual(terminal.getWrites().match(/\x1b\[\?1049l/g)?.length, 1);
+	});
+
+	it("routes SGR mouse reports to a focused nested composer descendant", async () => {
+		const terminal = new VirtualTerminal(30, 8);
+		const tui = new TUI(terminal);
+		const transcript = new TestComponent();
+		transcript.lines = Array.from({ length: 12 }, (_, index) => `Line ${index}`);
+		const composer = new Container();
+		const heading = new TestComponent();
+		heading.lines = ["Heading"];
+		const editor = new MouseComponent();
+		editor.lines = ["Editor 0", "Editor 1"];
+		composer.addChild(heading);
+		composer.addChild(editor);
+		tui.addChild(transcript);
+		tui.addChild(composer);
+		tui.setFixedBottom(composer);
+		tui.setFocus(editor);
+		tui.start();
+		await terminal.waitForRender();
+
+		terminal.sendInput("\x1b[<64;6;7M");
+		terminal.sendInput("\x1b[<0;6;7M");
+		terminal.sendInput("\x1b[<32;8;8M");
+		terminal.sendInput("\x1b[<0;8;8m");
+		await terminal.waitForRender();
+		assert.deepStrictEqual(editor.mouseEvents, [
+			{ type: "wheel", button: 0, x: 5, y: 0, wheelDirection: "up" },
+			{ type: "press", button: 0, x: 5, y: 0, wheelDirection: undefined },
+			{ type: "drag", button: 0, x: 7, y: 1, wheelDirection: undefined },
+			{ type: "release", button: 0, x: 7, y: 1, wheelDirection: undefined },
+		]);
+
+		terminal.sendInput("\x1b[<64;6;2M");
+		await terminal.waitForRender();
+		assert.strictEqual(terminal.getViewport()[0], "Line 4");
+		tui.stop();
+	});
+
+	it("routes transcript clicks through cached nested layouts after scrolling", async () => {
+		const terminal = new VirtualTerminal(30, 8);
+		const tui = new TUI(terminal);
+		const transcript = new Container();
+		const before = new TestComponent();
+		before.lines = Array.from({ length: 9 }, (_, index) => `Before ${index}`);
+		const nested = new Container();
+		const heading = new TestComponent();
+		heading.lines = ["Heading"];
+		const disclosure = new MouseComponent();
+		disclosure.lines = ["Disclosure", "Details"];
+		const after = new TestComponent();
+		after.lines = ["After 0", "After 1", "After 2"];
+		nested.addChild(heading);
+		nested.addChild(disclosure);
+		transcript.addChild(before);
+		transcript.addChild(nested);
+		transcript.addChild(after);
+		const composer = new MouseComponent();
+		composer.lines = ["Composer"];
+		tui.addChild(transcript);
+		tui.addChild(composer);
+		tui.setFixedBottom(composer);
+		tui.setFocus(composer);
+		tui.start();
+		await terminal.waitForRender();
+
+		// Scroll from logical row 8 to row 5, then click logical row 10.
+		terminal.sendInput("\x1b[<64;2;2M");
+		await terminal.waitForRender();
+		terminal.sendInput("\x1b[<0;4;6M");
+		await terminal.waitForRender();
+
+		assert.deepStrictEqual(disclosure.mouseEvents, [
+			{ type: "press", button: 0, x: 3, y: 0, wheelDirection: undefined },
+		]);
+		assert.deepStrictEqual(composer.mouseEvents, []);
+		tui.stop();
+	});
+
+	it("captures primary drag and release above and below the focused editor", async () => {
+		for (const releaseRow of [1, 8]) {
+			const terminal = new VirtualTerminal(30, 8);
+			const tui = new TUI(terminal);
+			const transcript = new TestComponent();
+			transcript.lines = ["Transcript"];
+			const editor = new MouseComponent();
+			editor.lines = ["Editor"];
+			tui.addChild(transcript);
+			tui.addChild(editor);
+			tui.setFixedBottom(editor);
+			tui.setFocus(editor);
+			tui.start();
+			await terminal.waitForRender();
+
+			terminal.sendInput("\x1b[<0;5;8M");
+			terminal.sendInput(`\x1b[<32;6;${releaseRow}M`);
+			terminal.sendInput(`\x1b[<0;6;${releaseRow}m`);
+			assert.deepStrictEqual(editor.mouseEvents, [
+				{ type: "press", button: 0, x: 4, y: 0, wheelDirection: undefined },
+				{ type: "drag", button: 0, x: 5, y: releaseRow - 8, wheelDirection: undefined },
+				{ type: "release", button: 0, x: 5, y: releaseRow - 8, wheelDirection: undefined },
+			]);
+			tui.stop();
+		}
+	});
+
+	it("keeps primary capture when fixed-bottom geometry changes between press and release", async () => {
+		const terminal = new VirtualTerminal(30, 8);
+		const tui = new TUI(terminal);
+		const transcript = new TestComponent();
+		transcript.lines = ["Transcript"];
+		const composer = new Container();
+		const heading = new TestComponent();
+		heading.lines = ["Heading"];
+		const editor = new MouseComponent();
+		editor.lines = ["Editor 0", "Editor 1"];
+		const footer = new TestComponent();
+		footer.lines = ["Footer"];
+		composer.addChild(heading);
+		composer.addChild(editor);
+		composer.addChild(footer);
+		tui.addChild(transcript);
+		tui.addChild(composer);
+		tui.setFixedBottom(composer);
+		tui.setFocus(editor);
+		tui.start();
+		await terminal.waitForRender();
+
+		terminal.sendInput("\x1b[<0;5;6M");
+		await terminal.waitForRender();
+		footer.lines.push("Footer 2");
+		tui.requestRender();
+		await terminal.waitForRender();
+		terminal.sendInput("\x1b[<32;6;2M");
+		terminal.sendInput("\x1b[<0;6;2m");
+
+		assert.deepStrictEqual(editor.mouseEvents, [
+			{ type: "press", button: 0, x: 4, y: 0, wheelDirection: undefined },
+			{ type: "drag", button: 0, x: 5, y: -3, wheelDirection: undefined },
+			{ type: "release", button: 0, x: 5, y: -3, wheelDirection: undefined },
+		]);
+		tui.stop();
+	});
+
+	it("consumes SGR horizontal wheel reports without dispatching them", async () => {
+		const terminal = new VirtualTerminal(30, 5);
+		const tui = new TUI(terminal);
+		const editor = new MouseComponent();
+		editor.lines = ["Editor"];
+		tui.addChild(editor);
+		tui.setFixedBottom(editor);
+		tui.setFocus(editor);
+		tui.start();
+		await terminal.waitForRender();
+		terminal.sendInput("\x1b[<66;5;5M");
+		terminal.sendInput("\x1b[<67;5;5M");
+		assert.deepStrictEqual(editor.mouseEvents, []);
+		assert.deepStrictEqual(editor.inputs, []);
+		tui.stop();
+	});
+
+	it("does not enable or consume mouse reports when capture is off and still disables all modes", async () => {
+		const terminal = new LoggingVirtualTerminal(30, 5);
+		const tui = new TUI(terminal);
+		const transcript = new TestComponent();
+		const composer = new TestComponent();
+		transcript.lines = ["Transcript"];
+		composer.lines = ["Composer"];
+		tui.addChild(transcript);
+		tui.addChild(composer);
+		tui.setFixedBottom(composer);
+		tui.setFocus(composer);
+		tui.setMouseCapture(false);
+
+		tui.start();
+		await terminal.waitForRender();
+		assert.ok(!terminal.getWrites().includes("\x1b[?1000h"));
+		assert.ok(!terminal.getWrites().includes("\x1b[?1006h"));
+
+		const report = "\x1b[<64;10;3M";
+		terminal.sendInput(report);
+		assert.deepStrictEqual(composer.inputs, [report]);
+
+		terminal.clearWrites();
+		tui.stop();
+		for (const mode of [1000, 1002, 1003, 1006]) {
+			assert.ok(terminal.getWrites().includes(`\x1b[?${mode}l`));
+		}
 	});
 });

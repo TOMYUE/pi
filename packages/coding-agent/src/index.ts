@@ -93,6 +93,7 @@ export type {
 	ExtensionWidgetOptions,
 	FindToolCallEvent,
 	GrepToolCallEvent,
+	HiddenThinkingLabels,
 	InlineExtension,
 	InputEvent,
 	InputEventResult,

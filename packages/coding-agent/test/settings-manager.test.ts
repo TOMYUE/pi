@@ -25,6 +25,17 @@ describe("SettingsManager", () => {
 		}
 	});
 
+	describe("thinking disclosure", () => {
+		it("defaults thinking blocks to collapsed while respecting an explicit visible setting", () => {
+			const manager = SettingsManager.create(projectDir, agentDir);
+			expect(manager.getHideThinkingBlock()).toBe(true);
+
+			writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ hideThinkingBlock: false }));
+			const visibleManager = SettingsManager.create(projectDir, agentDir);
+			expect(visibleManager.getHideThinkingBlock()).toBe(false);
+		});
+	});
+
 	describe("preserves externally added settings", () => {
 		it("should preserve enabledModels when changing thinking level", async () => {
 			// Create initial settings file
@@ -417,6 +428,33 @@ describe("SettingsManager", () => {
 			const manager = SettingsManager.create(projectDir, agentDir);
 
 			expect(manager.getOutputPad()).toBe(1);
+		});
+	});
+
+	describe("terminal.mouseCapture", () => {
+		const originalMouseCapture = process.env.PI_MOUSE_CAPTURE;
+
+		afterEach(() => {
+			if (originalMouseCapture === undefined) delete process.env.PI_MOUSE_CAPTURE;
+			else process.env.PI_MOUSE_CAPTURE = originalMouseCapture;
+		});
+
+		it("defaults on and supports the environment override", () => {
+			delete process.env.PI_MOUSE_CAPTURE;
+			expect(SettingsManager.inMemory().getMouseCapture()).toBe(true);
+			process.env.PI_MOUSE_CAPTURE = "0";
+			expect(SettingsManager.inMemory().getMouseCapture()).toBe(false);
+		});
+
+		it("gives persisted settings precedence and persists changes", async () => {
+			process.env.PI_MOUSE_CAPTURE = "1";
+			const manager = SettingsManager.create(projectDir, agentDir);
+			manager.setMouseCapture(false);
+			await manager.flush();
+
+			expect(manager.getMouseCapture()).toBe(false);
+			const savedSettings = JSON.parse(readFileSync(join(agentDir, "settings.json"), "utf-8"));
+			expect(savedSettings.terminal.mouseCapture).toBe(false);
 		});
 	});
 

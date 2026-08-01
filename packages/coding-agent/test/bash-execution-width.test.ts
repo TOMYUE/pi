@@ -23,6 +23,7 @@ function createTuiStub(columns: number): { columns: number; stub: any } {
 		addInterval: (_cb: () => void, _ms: number) => ({ dispose: () => {} }),
 		removeInterval: () => {},
 		requestRender: () => {},
+		requestRenderFor: () => {},
 	};
 	return { columns: state.columns, stub };
 }

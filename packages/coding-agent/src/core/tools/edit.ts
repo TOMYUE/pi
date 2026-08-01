@@ -248,8 +248,9 @@ function buildEditCallComponent(
 	args: RenderableEditArgs | undefined,
 	theme: Theme,
 	cwd: string,
+	expanded: boolean,
 ): EditCallRenderComponent {
-	component.setBgFn(getEditHeaderBg(component.preview, component.settledError, theme));
+	component.setBgFn(expanded ? getEditHeaderBg(component.preview, component.settledError, theme) : undefined);
 	component.clear();
 	component.addChild(new Text(formatEditCall(args, theme, cwd), 0, 0));
 
@@ -292,6 +293,7 @@ export function createEditToolDefinition(
 	return {
 		name: "edit",
 		label: "edit",
+		lifecycle: { active: "Editing...", complete: "Edited", error: "Edit failed" },
 		description:
 			"Edit a single file using exact text replacement. Every edits[].oldText must match a unique, non-overlapping region of the original file. If two changes affect the same block or nearby lines, merge them into one edit instead of emitting overlapping edits. Do not include large unchanged regions just to connect distant changes.",
 		promptSnippet:
@@ -385,7 +387,7 @@ export function createEditToolDefinition(
 				});
 			}
 
-			return buildEditCallComponent(component, args, theme, context.cwd);
+			return buildEditCallComponent(component, args, theme, context.cwd, context.expanded);
 		},
 		renderResult(result, _options, theme, context) {
 			const callComponent = context.state.callComponent;
@@ -415,6 +417,7 @@ export function createEditToolDefinition(
 						context.args as RenderableEditArgs | undefined,
 						theme,
 						context.cwd,
+						context.expanded,
 					);
 				}
 			}

@@ -1,10 +1,90 @@
 import type { AssistantMessage } from "@earendil-works/pi-ai";
-import { Container, Markdown, type MarkdownTheme, Spacer, Text } from "@earendil-works/pi-tui";
+import { Container, Markdown, type MarkdownTheme, Spacer, Text, type TuiMouseEvent } from "@earendil-works/pi-tui";
+import type { HiddenThinkingLabels } from "../../../core/extensions/types.ts";
 import { getMarkdownTheme, theme } from "../theme/theme.ts";
 
 const OSC133_ZONE_START = "\x1b]133;A\x07";
 const OSC133_ZONE_END = "\x1b]133;B\x07";
 const OSC133_ZONE_FINAL = "\x1b]133;C\x07";
+
+export const DEFAULT_HIDDEN_THINKING_LABELS: Readonly<HiddenThinkingLabels> = {
+	active: "Thinking...",
+	complete: "Thought",
+};
+
+export function normalizeHiddenThinkingLabels(labels?: string | HiddenThinkingLabels): HiddenThinkingLabels {
+	if (labels === undefined) {
+		return { ...DEFAULT_HIDDEN_THINKING_LABELS };
+	}
+	if (typeof labels === "string") {
+		return { active: labels, complete: labels };
+	}
+	return { active: labels.active, complete: labels.complete };
+}
+
+class ThinkingBlockComponent extends Container {
+	private text: string;
+	private expanded: boolean;
+	private markdownTheme: MarkdownTheme;
+	private label: string;
+	private outputPad: number;
+	private disclosure!: Text;
+
+	constructor(text: string, expanded: boolean, markdownTheme: MarkdownTheme, label: string, outputPad: number) {
+		super();
+		this.text = text;
+		this.expanded = expanded;
+		this.markdownTheme = markdownTheme;
+		this.label = label;
+		this.outputPad = outputPad;
+		this.rebuild();
+	}
+
+	update(text: string, markdownTheme: MarkdownTheme, label: string, outputPad: number): void {
+		this.text = text;
+		this.markdownTheme = markdownTheme;
+		this.label = label;
+		this.outputPad = outputPad;
+		this.rebuild();
+	}
+
+	setLabel(label: string): void {
+		if (this.label === label) return;
+		this.label = label;
+		this.disclosure.setText(this.getDisclosureText());
+	}
+
+	setExpanded(expanded: boolean): void {
+		if (this.expanded === expanded) return;
+		this.expanded = expanded;
+		this.rebuild();
+	}
+
+	handleMouse(event: TuiMouseEvent): void {
+		if (event.type === "press" && event.button === 0 && event.y === 0) {
+			this.setExpanded(!this.expanded);
+		}
+	}
+
+	private rebuild(): void {
+		this.clear();
+		this.disclosure = new Text(this.getDisclosureText(), this.outputPad, 0);
+		this.addChild(this.disclosure);
+		if (this.expanded) {
+			this.addChild(
+				new Markdown(this.text, this.outputPad + 2, 0, this.markdownTheme, {
+					color: (text: string) => theme.fg("thinkingText", text),
+					italic: true,
+				}),
+			);
+		}
+	}
+
+	private getDisclosureText(): string {
+		const disclosure = this.expanded ? "▼" : "▶";
+		return theme.italic(theme.fg("thinkingText", `${disclosure} ${this.label}`));
+	}
+}
 
 /**
  * Component that renders a complete assistant message
@@ -13,23 +93,25 @@ export class AssistantMessageComponent extends Container {
 	private contentContainer: Container;
 	private hideThinkingBlock: boolean;
 	private markdownTheme: MarkdownTheme;
-	private hiddenThinkingLabel: string;
+	private hiddenThinkingLabels: HiddenThinkingLabels;
 	private outputPad: number;
 	private lastMessage?: AssistantMessage;
+	private streaming = false;
 	private hasToolCalls = false;
+	private thinkingBlocks: ThinkingBlockComponent[] = [];
 
 	constructor(
 		message?: AssistantMessage,
-		hideThinkingBlock = false,
+		hideThinkingBlock = true,
 		markdownTheme: MarkdownTheme = getMarkdownTheme(),
-		hiddenThinkingLabel = "Thinking...",
+		hiddenThinkingLabels?: string | HiddenThinkingLabels,
 		outputPad = 1,
 	) {
 		super();
 
 		this.hideThinkingBlock = hideThinkingBlock;
 		this.markdownTheme = markdownTheme;
-		this.hiddenThinkingLabel = hiddenThinkingLabel;
+		this.hiddenThinkingLabels = normalizeHiddenThinkingLabels(hiddenThinkingLabels);
 		this.outputPad = outputPad;
 
 		// Container for text/thinking content
@@ -50,15 +132,19 @@ export class AssistantMessageComponent extends Container {
 
 	setHideThinkingBlock(hide: boolean): void {
 		this.hideThinkingBlock = hide;
+		for (const block of this.thinkingBlocks) {
+			block.setExpanded(!hide);
+		}
 		if (this.lastMessage) {
 			this.updateContent(this.lastMessage);
 		}
 	}
 
-	setHiddenThinkingLabel(label: string): void {
-		this.hiddenThinkingLabel = label;
-		if (this.lastMessage) {
-			this.updateContent(this.lastMessage);
+	setHiddenThinkingLabel(labels?: string | HiddenThinkingLabels): void {
+		this.hiddenThinkingLabels = normalizeHiddenThinkingLabels(labels);
+		const label = this.streaming ? this.hiddenThinkingLabels.active : this.hiddenThinkingLabels.complete;
+		for (const block of this.thinkingBlocks) {
+			block.setLabel(label);
 		}
 	}
 
@@ -80,8 +166,9 @@ export class AssistantMessageComponent extends Container {
 		return lines;
 	}
 
-	updateContent(message: AssistantMessage): void {
+	updateContent(message: AssistantMessage, streaming = this.streaming): void {
 		this.lastMessage = message;
+		this.streaming = streaming;
 
 		// Clear content container
 		this.contentContainer.clear();
@@ -94,6 +181,7 @@ export class AssistantMessageComponent extends Container {
 			this.contentContainer.addChild(new Spacer(1));
 		}
 
+		let thinkingBlockIndex = 0;
 		// Render content in order
 		for (let i = 0; i < message.content.length; i++) {
 			const content = message.content[i];
@@ -125,25 +213,30 @@ export class AssistantMessageComponent extends Container {
 					.slice(i + 1)
 					.some((c) => (c.type === "text" && c.text.trim()) || (c.type === "thinking" && c.thinking.trim()));
 
-				if (this.hideThinkingBlock) {
-					// Show one static label for each run of thinking blocks when hidden.
-					this.contentContainer.addChild(
-						new Text(theme.italic(theme.fg("thinkingText", this.hiddenThinkingLabel)), this.outputPad, 0),
+				let thinkingBlock = this.thinkingBlocks[thinkingBlockIndex];
+				const thinkingLabel = this.streaming
+					? this.hiddenThinkingLabels.active
+					: this.hiddenThinkingLabels.complete;
+				if (!thinkingBlock) {
+					thinkingBlock = new ThinkingBlockComponent(
+						thinkingBlocks.join("\n\n"),
+						!this.hideThinkingBlock,
+						this.markdownTheme,
+						thinkingLabel,
+						this.outputPad,
 					);
+					this.thinkingBlocks.push(thinkingBlock);
 				} else {
-					// Render each run of thinking blocks as one Markdown section.
-					this.contentContainer.addChild(
-						new Markdown(thinkingBlocks.join("\n\n"), this.outputPad, 0, this.markdownTheme, {
-							color: (text: string) => theme.fg("thinkingText", text),
-							italic: true,
-						}),
-					);
+					thinkingBlock.update(thinkingBlocks.join("\n\n"), this.markdownTheme, thinkingLabel, this.outputPad);
 				}
+				thinkingBlockIndex++;
+				this.contentContainer.addChild(thinkingBlock);
 				if (hasVisibleContentAfter) {
 					this.contentContainer.addChild(new Spacer(1));
 				}
 			}
 		}
+		this.thinkingBlocks.length = thinkingBlockIndex;
 
 		// Check if incomplete/failed - show after partial content.
 		// For aborted/error tool calls, tool execution components show the error.

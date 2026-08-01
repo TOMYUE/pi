@@ -1,5 +1,6 @@
-import { type RgbColor, resetCapabilitiesCache, setCapabilities } from "@earendil-works/pi-tui";
-import { afterEach, describe, expect, it } from "vitest";
+import { type RgbColor, resetCapabilitiesCache, setCapabilities, type TUI } from "@earendil-works/pi-tui";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import type { SettingsManager } from "../src/core/settings-manager.ts";
 import {
 	detectTerminalBackgroundFromEnv,
 	detectTerminalBackgroundTheme,
@@ -7,10 +8,13 @@ import {
 	getThemeForRgbColor,
 	parseAutoThemeSetting,
 	resolveThemeSetting,
+	setTheme,
 } from "../src/modes/interactive/theme/theme.ts";
+import { InteractiveThemeController } from "../src/modes/interactive/theme/theme-controller.ts";
 
 afterEach(() => {
 	resetCapabilitiesCache();
+	setTheme("dark");
 });
 
 describe("detectTerminalBackgroundFromEnv", () => {
@@ -96,6 +100,39 @@ describe("detectTerminalBackgroundTheme", () => {
 			source: "COLORFGBG",
 			confidence: "high",
 		});
+	});
+});
+
+describe("InteractiveThemeController", () => {
+	it("does not let pending terminal detection overwrite a newer theme", async () => {
+		let resolveQuery: ((rgb: RgbColor | undefined) => void) | undefined;
+		const ui = {
+			invalidate: vi.fn(),
+			onTerminalColorSchemeChange: vi.fn(),
+			queryTerminalBackgroundColor: vi.fn(
+				() =>
+					new Promise<RgbColor | undefined>((resolve) => {
+						resolveQuery = resolve;
+					}),
+			),
+			setTerminalColorSchemeNotifications: vi.fn(),
+		} as unknown as TUI;
+		const settingsManager = {
+			flush: vi.fn(async () => {}),
+			getThemeSetting: vi.fn(() => undefined),
+			setTheme: vi.fn(),
+		} as unknown as SettingsManager;
+		const onChanged = vi.fn();
+		const controller = new InteractiveThemeController(ui, settingsManager, vi.fn(), onChanged);
+
+		const pendingApply = controller.applyFromSettings();
+		controller.setThemeName("light");
+		if (!resolveQuery) throw new Error("terminal background query did not start");
+		resolveQuery({ r: 0, g: 0, b: 0 });
+		await pendingApply;
+
+		expect(onChanged).toHaveBeenCalledTimes(1);
+		expect(settingsManager.setTheme).not.toHaveBeenCalled();
 	});
 });
 
